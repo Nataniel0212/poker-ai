@@ -739,6 +739,20 @@ class AssistantWorker(threading.Thread):
                 # Check if window was resized — recalculate layout if so
                 assistant.recalibrate_if_resized(frame)
 
+                # If started between hands (no cards visible), retry layout
+                # detection until we get a proper card-based calibration
+                if getattr(assistant, '_needs_recalibration', False):
+                    try:
+                        from calibrate_pokerstars import auto_detect_layout
+                        calc = auto_detect_layout(frame)
+                        if calc is not None:
+                            assistant.table_reader.regions = assistant._calc_to_regions(calc)
+                            assistant._needs_recalibration = False
+                            debug_saved = False  # Re-save overlay with new regions
+                            print(f"  Recalibrated! Card size: {calc.get('_card_size')}")
+                    except ImportError:
+                        pass
+
                 # Save debug overlay on first frame
                 if not debug_saved:
                     self._save_debug_overlay(frame)
