@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Debug & generated images
+debug_images/
+models/card_templates_ps/
+models/card_templates_temp/
+models/card_templates_live_backup/
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary/install scripts
+install_gh.ps1
+
+# Test scripts (not needed in repo)
+test_suit_offline.py

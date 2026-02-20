@@ -1,0 +1,24 @@
+# Screen capture
+mss>=9.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# OCR
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Poker evaluation & equity
+phevaluator>=0.5.0
+treys>=0.1.8
+
+# LLM
+ollama>=0.4.0
+
+# UI
+PyQt6>=6.6.0
+
+# Database
+# sqlite3 is built-in
+
+# Utilities
+dataclasses-json>=0.6.0

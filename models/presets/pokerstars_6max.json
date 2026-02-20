@@ -1,0 +1,61 @@
+{
+    "_description": "PokerStars 6-max table layout preset",
+    "_resolution": "Default PokerStars window size (~800x600). Adjust if your window differs.",
+    "_instructions": "These are approximate regions. Run 'python main.py --calibrate' for exact calibration.",
+
+    "hero_card_1": [345, 405, 45, 62],
+    "hero_card_2": [392, 405, 45, 62],
+
+    "community_cards": [
+        [280, 230, 42, 58],
+        [328, 230, 42, 58],
+        [376, 230, 42, 58],
+        [424, 230, 42, 58],
+        [472, 230, 42, 58]
+    ],
+
+    "pot_text": [340, 200, 120, 25],
+
+    "player_regions": [
+        {
+            "_position": "Hero (bottom center, seat 0)",
+            "name": [345, 475, 120, 18],
+            "stack": [345, 493, 100, 18],
+            "bet": [370, 370, 80, 18]
+        },
+        {
+            "_position": "Seat 1 (bottom right)",
+            "name": [590, 380, 120, 18],
+            "stack": [590, 398, 100, 18],
+            "bet": [520, 310, 80, 18]
+        },
+        {
+            "_position": "Seat 2 (top right)",
+            "name": [590, 160, 120, 18],
+            "stack": [590, 178, 100, 18],
+            "bet": [520, 240, 80, 18]
+        },
+        {
+            "_position": "Seat 3 (top center)",
+            "name": [345, 80, 120, 18],
+            "stack": [345, 98, 100, 18],
+            "bet": [370, 170, 80, 18]
+        },
+        {
+            "_position": "Seat 4 (top left)",
+            "name": [90, 160, 120, 18],
+            "stack": [90, 178, 100, 18],
+            "bet": [200, 240, 80, 18]
+        },
+        {
+            "_position": "Seat 5 (bottom left)",
+            "name": [90, 380, 120, 18],
+            "stack": [90, 398, 100, 18],
+            "bet": [200, 310, 80, 18]
+        }
+    ],
+
+    "dealer_button_search_area": [50, 50, 700, 500],
+    "action_buttons_area": [250, 530, 300, 50],
+    "bet_slider_area": [560, 530, 150, 30]
+}

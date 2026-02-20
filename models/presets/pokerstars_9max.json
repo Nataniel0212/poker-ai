@@ -1,0 +1,78 @@
+{
+    "_description": "PokerStars 9-max (full ring) table layout preset",
+    "_resolution": "Default PokerStars window size (~800x600). Adjust if your window differs.",
+
+    "hero_card_1": [345, 405, 45, 62],
+    "hero_card_2": [392, 405, 45, 62],
+
+    "community_cards": [
+        [280, 230, 42, 58],
+        [328, 230, 42, 58],
+        [376, 230, 42, 58],
+        [424, 230, 42, 58],
+        [472, 230, 42, 58]
+    ],
+
+    "pot_text": [340, 200, 120, 25],
+
+    "player_regions": [
+        {
+            "_position": "Hero (bottom center, seat 0)",
+            "name": [345, 475, 120, 18],
+            "stack": [345, 493, 100, 18],
+            "bet": [370, 370, 80, 18]
+        },
+        {
+            "_position": "Seat 1 (bottom right)",
+            "name": [620, 420, 120, 18],
+            "stack": [620, 438, 100, 18],
+            "bet": [550, 340, 80, 18]
+        },
+        {
+            "_position": "Seat 2 (right)",
+            "name": [680, 300, 120, 18],
+            "stack": [680, 318, 100, 18],
+            "bet": [580, 280, 80, 18]
+        },
+        {
+            "_position": "Seat 3 (upper right)",
+            "name": [620, 160, 120, 18],
+            "stack": [620, 178, 100, 18],
+            "bet": [550, 220, 80, 18]
+        },
+        {
+            "_position": "Seat 4 (top right)",
+            "name": [470, 80, 120, 18],
+            "stack": [470, 98, 100, 18],
+            "bet": [450, 160, 80, 18]
+        },
+        {
+            "_position": "Seat 5 (top left)",
+            "name": [220, 80, 120, 18],
+            "stack": [220, 98, 100, 18],
+            "bet": [270, 160, 80, 18]
+        },
+        {
+            "_position": "Seat 6 (upper left)",
+            "name": [60, 160, 120, 18],
+            "stack": [60, 178, 100, 18],
+            "bet": [170, 220, 80, 18]
+        },
+        {
+            "_position": "Seat 7 (left)",
+            "name": [10, 300, 120, 18],
+            "stack": [10, 318, 100, 18],
+            "bet": [140, 280, 80, 18]
+        },
+        {
+            "_position": "Seat 8 (bottom left)",
+            "name": [60, 420, 120, 18],
+            "stack": [60, 438, 100, 18],
+            "bet": [170, 340, 80, 18]
+        }
+    ],
+
+    "dealer_button_search_area": [30, 50, 740, 500],
+    "action_buttons_area": [250, 530, 300, 50],
+    "bet_slider_area": [560, 530, 150, 30]
+}
