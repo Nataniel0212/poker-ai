@@ -173,13 +173,54 @@ class TableReader:
 
         return reading
 
+    def _find_card_body(self, roi: np.ndarray) -> Optional[np.ndarray]:
+        """Find the actual card within the ROI by locating the bright card body.
+
+        Cards on PokerStars have a white body that stands out against the
+        green felt or dark table panel. This finds the largest bright region
+        and returns a tightly cropped sub-image of just the card.
+
+        Returns cropped card image, or None if no card body found.
+        """
+        if roi is None or roi.size == 0:
+            return None
+
+        rh, rw = roi.shape[:2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        # Find bright pixels (card body is white/light)
+        _, bright = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        # Find the largest bright region
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if area < rh * rw * 0.08:  # Must be at least 8% of ROI
+            return None
+
+        x, y, cw, ch = cv2.boundingRect(largest)
+
+        # The white body is ~60% of card height — expand to full card
+        full_h = min(int(ch / 0.55), rh)
+        card_top = max(0, y - int(ch * 0.35))
+        card_bottom = min(rh, card_top + full_h)
+        card_left = max(0, x - 2)
+        card_right = min(rw, x + cw + 2)
+
+        card = roi[card_top:card_bottom, card_left:card_right]
+        if card.shape[0] < 15 or card.shape[1] < 10:
+            return None
+
+        return card
+
     def _detect_card(self, roi: np.ndarray) -> Optional[str]:
         """Detect a card using grayscale normalized correlation on the corner.
 
-        Compares the top-left corner of the ROI (where rank + suit symbol is)
-        against pre-cached grayscale corners from real PokerStars screenshots.
-        Uses TM_CCOEFF_NORMED which is invariant to brightness/contrast shifts,
-        making it work for both white community cards and dark hero cards.
+        First finds the actual card within the ROI (handles offset cards),
+        then matches the corner against template cache.
 
         Args:
             roi: Cropped image of a card area
@@ -193,28 +234,30 @@ class TableReader:
         if not self._is_card_present(roi):
             return None
 
-        rh, rw = roi.shape[:2]
-        if rh < 20 or rw < 15:
+        # Find the actual card body within the ROI
+        card = self._find_card_body(roi)
+        if card is None:
             return None
 
-        # Search area: top-left 55% of ROI
-        search_h = int(rh * 0.55)
-        search_w = int(rw * 0.55)
-        search_area = roi[0:search_h, 0:search_w]
-        search_gray = cv2.cvtColor(search_area, cv2.COLOR_BGR2GRAY)
-        # Normalize brightness so dark hero cards match same as bright community cards
+        ch, cw = card.shape[:2]
+
+        # Search area: top-left 55% of the CARD (not the full ROI)
+        search_h = int(ch * 0.55)
+        search_w = int(cw * 0.55)
+        search_gray = cv2.cvtColor(card[0:search_h, 0:search_w], cv2.COLOR_BGR2GRAY)
         search_norm = cv2.normalize(search_gray, None, 0, 255, cv2.NORM_MINMAX)
 
-        # Template corner target size: ~40% of ROI (must be smaller than search)
-        target_h = max(int(rh * 0.40), 15)
-        target_w = max(int(rw * 0.40), 10)
+        # Template corner: ~40% of card size
+        target_h = max(int(ch * 0.40), 15)
+        target_w = max(int(cw * 0.40), 10)
 
         if target_h >= search_h or target_w >= search_w:
             return None
 
         best_match = None
         best_score = 0
-        threshold = 0.55  # Grayscale correlation is much more reliable than edges
+        second_best_score = 0
+        threshold = 0.65
 
         for card_name, corner_gray in self._corner_cache.items():
             tmpl = cv2.resize(corner_gray, (target_w, target_h),
@@ -224,9 +267,20 @@ class TableReader:
             result = cv2.matchTemplate(search_norm, tmpl_norm, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(result)
 
-            if max_val > best_score and max_val > threshold:
+            if max_val > best_score:
+                second_best_score = best_score
                 best_score = max_val
                 best_match = card_name
+            elif max_val > second_best_score:
+                second_best_score = max_val
+
+        if best_score < threshold:
+            return None
+
+        # Confidence check: if the gap between best and second-best is too
+        # small, the match is ambiguous (e.g. 6/9, J/T confusion)
+        if best_score - second_best_score < 0.05:
+            return None
 
         return best_match
 
@@ -288,16 +342,21 @@ class TableReader:
         if roi is None or roi.size == 0 or pytesseract is None:
             return None
 
-        h, w = roi.shape[:2]
-        if h < 10 or w < 10:
-            return None
-
         # Check if there's actually a card here
         if not self._is_card_present(roi):
             return None
 
+        # Find the actual card within the ROI
+        card = self._find_card_body(roi)
+        if card is None:
+            card = roi  # Fallback to full ROI
+
+        h, w = card.shape[:2]
+        if h < 10 or w < 10:
+            return None
+
         # Crop top-left corner where rank is shown (~40% width, ~40% height)
-        rank_corner = roi[1:int(h * 0.40), 1:int(w * 0.40)]
+        rank_corner = card[1:int(h * 0.40), 1:int(w * 0.40)]
         if rank_corner.size == 0:
             return None
 
@@ -351,7 +410,7 @@ class TableReader:
         if not rank:
             return None
 
-        suit = self._detect_suit(roi)
+        suit = self._detect_suit(card)
         return f"{rank}{suit}"
 
     def _detect_suit(self, roi: np.ndarray) -> str:
