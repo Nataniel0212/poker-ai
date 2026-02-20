@@ -234,12 +234,16 @@ class TableReader:
         if not self._is_card_present(roi):
             return None
 
-        # Find the actual card body within the ROI
+        # Find the actual card body within the ROI.
+        # Falls back to using the full ROI if no bright card body is found
+        # (hero cards have dark backgrounds where _find_card_body fails).
         card = self._find_card_body(roi)
         if card is None:
-            return None
+            card = roi
 
         ch, cw = card.shape[:2]
+        if ch < 20 or cw < 15:
+            return None
 
         # Search area: top-left 55% of the CARD (not the full ROI)
         search_h = int(ch * 0.55)
@@ -256,8 +260,9 @@ class TableReader:
 
         best_match = None
         best_score = 0
+        second_best_match = None
         second_best_score = 0
-        threshold = 0.65
+        threshold = 0.60
 
         for card_name, corner_gray in self._corner_cache.items():
             tmpl = cv2.resize(corner_gray, (target_w, target_h),
@@ -269,17 +274,23 @@ class TableReader:
 
             if max_val > best_score:
                 second_best_score = best_score
+                second_best_match = best_match
                 best_score = max_val
                 best_match = card_name
             elif max_val > second_best_score:
                 second_best_score = max_val
+                second_best_match = card_name
 
         if best_score < threshold:
             return None
 
-        # Confidence check: if the gap between best and second-best is too
-        # small, the match is ambiguous (e.g. 6/9, J/T confusion)
-        if best_score - second_best_score < 0.05:
+        # Confidence check: only reject when the top two matches have
+        # DIFFERENT ranks (e.g. 6/9, J/T confusion). Same-rank matches
+        # (e.g. As vs Ad) naturally have tiny gaps because suit symbols
+        # are small — that's fine, we trust the best match.
+        if (best_score - second_best_score < 0.05
+                and second_best_match is not None
+                and best_match[0] != second_best_match[0]):
             return None
 
         return best_match

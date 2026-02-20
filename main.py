@@ -23,6 +23,7 @@ import time
 import random
 import argparse
 import threading
+import numpy as np
 
 # Fix Windows console encoding for Swedish characters
 if hasattr(sys.stdout, 'buffer') and not isinstance(sys.stdout, io.TextIOWrapper):
