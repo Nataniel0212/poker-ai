@@ -95,62 +95,37 @@ class TableReader:
             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         self._load_templates()
 
-    # Standard template size — all templates normalized to this on load.
-    # Chosen to be larger than typical community card ROI (~75x105) so we
-    # always scale DOWN (INTER_AREA) which preserves detail better than up.
-    TEMPLATE_SIZE = (150, 210)  # (width, height)
-
     def _load_templates(self):
         """Load card template images from disk.
 
-        Tries live-captured templates first (models/card_templates_live/),
-        then falls back to synthetic templates (models/card_templates/).
-        All templates are normalized to TEMPLATE_SIZE on load for consistent
-        matching regardless of original capture resolution.
+        Loads from models/card_templates_live/ — manually captured correct
+        images from PokerStars.  All templates are stored as-is (original
+        resolution) and resized at match time to fit the ROI.
         """
-        # Directories to search (priority order)
-        # PS-captured templates (auto-saved from live game) take highest priority
         base = os.path.dirname(self.template_dir)
-        ps_dir = os.path.join(base, "card_templates_ps")
         live_dir = os.path.join(base, "card_templates_live")
-        dirs = [ps_dir, live_dir, self.template_dir]
-
-        tw, th = self.TEMPLATE_SIZE
 
         for rank in RANKS:
             for suit in SUITS:
                 card_name = f"{rank}{suit}"
-                if card_name in self.card_templates:
-                    continue  # Already loaded from higher-priority dir
-                for tdir in dirs:
-                    if not os.path.exists(tdir):
-                        continue
-                    for ext in ('.png', '.jpg', '.bmp'):
-                        path = os.path.join(tdir, f"{card_name}{ext}")
-                        if os.path.exists(path):
-                            with open(path, 'rb') as f:
-                                data = np.frombuffer(f.read(), np.uint8)
-                            template = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                            if template is not None:
-                                # Normalize to standard size
-                                template = cv2.resize(template, (tw, th),
-                                                      interpolation=cv2.INTER_AREA)
-                                self.card_templates[card_name] = template
-                            break
-                    if card_name in self.card_templates:
-                        break
+                path = os.path.join(live_dir, f"{card_name}.png")
+                if not os.path.exists(path):
+                    continue
+                with open(path, 'rb') as f:
+                    data = np.frombuffer(f.read(), np.uint8)
+                template = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                if template is not None:
+                    self.card_templates[card_name] = template
 
-        # Pre-build corner cache (top-left 45% of each normalized template)
+        # Pre-build grayscale corner cache (top-left ~40% where rank+suit symbol is)
         self._corner_cache = {}
         for card_name, template in self.card_templates.items():
             h, w = template.shape[:2]
             corner = template[0:int(h * 0.45), 0:int(w * 0.45)]
-            self._corner_cache[card_name] = corner
+            self._corner_cache[card_name] = cv2.cvtColor(corner, cv2.COLOR_BGR2GRAY)
 
         if self.card_templates:
-            live_count = sum(1 for c in self.card_templates
-                           if os.path.exists(os.path.join(live_dir, f"{c}.png")))
-            print(f"Loaded {len(self.card_templates)} card templates ({live_count} live, normalized to {tw}x{th})")
+            print(f"Loaded {len(self.card_templates)} card templates from card_templates_live/")
         else:
             print("No card templates found — card detection will rely on OCR only")
 
@@ -199,11 +174,12 @@ class TableReader:
         return reading
 
     def _detect_card(self, roi: np.ndarray) -> Optional[str]:
-        """Detect a card using edge-based template matching with sliding window.
+        """Detect a card using grayscale normalized correlation on the corner.
 
-        Uses Canny edge detection on both template and ROI before matching.
-        This makes matching invariant to background color (works for both
-        white-background community cards and dark-background hero cards).
+        Compares the top-left corner of the ROI (where rank + suit symbol is)
+        against pre-cached grayscale corners from real PokerStars screenshots.
+        Uses TM_CCOEFF_NORMED which is invariant to brightness/contrast shifts,
+        making it work for both white community cards and dark hero cards.
 
         Args:
             roi: Cropped image of a card area
@@ -221,35 +197,31 @@ class TableReader:
         if rh < 20 or rw < 15:
             return None
 
-        # Search area: top-left 65% of ROI (card corner must be in this area)
-        search_h = int(rh * 0.65)
-        search_w = int(rw * 0.65)
+        # Search area: top-left 55% of ROI
+        search_h = int(rh * 0.55)
+        search_w = int(rw * 0.55)
         search_area = roi[0:search_h, 0:search_w]
+        search_gray = cv2.cvtColor(search_area, cv2.COLOR_BGR2GRAY)
+        # Normalize brightness so dark hero cards match same as bright community cards
+        search_norm = cv2.normalize(search_gray, None, 0, 255, cv2.NORM_MINMAX)
 
-        # Template corner target: ~35% of ROI (smaller than search area = sliding)
-        target_h = max(int(rh * 0.35), 15)
-        target_w = max(int(rw * 0.35), 10)
+        # Template corner target size: ~40% of ROI (must be smaller than search)
+        target_h = max(int(rh * 0.40), 15)
+        target_w = max(int(rw * 0.40), 10)
 
         if target_h >= search_h or target_w >= search_w:
             return None
 
-        # Convert search area to edge map (invariant to background color)
-        search_gray = cv2.cvtColor(search_area, cv2.COLOR_BGR2GRAY)
-        search_edges = cv2.Canny(search_gray, 50, 150)
-
         best_match = None
         best_score = 0
-        threshold = 0.35  # Lower threshold for edge matching (edges are sparse)
+        threshold = 0.55  # Grayscale correlation is much more reliable than edges
 
-        for card_name, corner_tmpl in self._corner_cache.items():
-            tmpl = cv2.resize(corner_tmpl, (target_w, target_h),
+        for card_name, corner_gray in self._corner_cache.items():
+            tmpl = cv2.resize(corner_gray, (target_w, target_h),
                               interpolation=cv2.INTER_AREA)
+            tmpl_norm = cv2.normalize(tmpl, None, 0, 255, cv2.NORM_MINMAX)
 
-            # Convert template to edge map too
-            tmpl_gray = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
-            tmpl_edges = cv2.Canny(tmpl_gray, 50, 150)
-
-            result = cv2.matchTemplate(search_edges, tmpl_edges, cv2.TM_CCOEFF_NORMED)
+            result = cv2.matchTemplate(search_norm, tmpl_norm, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(result)
 
             if max_val > best_score and max_val > threshold:
@@ -608,62 +580,26 @@ class TableReader:
             return np.array([])
         return frame[y:y+h, x:x+w]
 
-    def _auto_capture_template(self, roi: np.ndarray, card_name: str):
-        """Auto-save a card ROI as a PS-specific template for future matching.
-
-        Only saves if we don't already have a PS-captured template for this card.
-        This builds up accurate templates over time from actual live game frames.
-        """
-        if roi is None or roi.size == 0 or not card_name:
-            return
-        if len(card_name) != 2:
-            return
-
-        # Save to a PS-specific template directory
-        ps_dir = os.path.join(os.path.dirname(self.template_dir), "card_templates_ps")
-        os.makedirs(ps_dir, exist_ok=True)
-
-        path = os.path.join(ps_dir, f"{card_name}.png")
-        if os.path.exists(path):
-            return  # Already have this card
-
-        # Save the ROI as template
-        ok, buf = cv2.imencode('.png', roi)
-        if ok:
-            with open(path, 'wb') as f:
-                f.write(buf)
-
-            # Also update the in-memory template cache
-            tw, th = self.TEMPLATE_SIZE
-            template = cv2.resize(roi, (tw, th), interpolation=cv2.INTER_AREA)
-            self.card_templates[card_name] = template
-            h, w = template.shape[:2]
-            self._corner_cache[card_name] = template[0:int(h * 0.45), 0:int(w * 0.45)]
-
     def _read_hero_cards(self, frame: np.ndarray) -> list:
-        """Read hero's two hole cards. Uses OCR first (more reliable), template as fallback."""
+        """Read hero's two hole cards. Template matching first, OCR as fallback."""
         cards = []
         for region in [self.regions.hero_card_1, self.regions.hero_card_2]:
             roi = self._crop_region(frame, region)
-            card = self._detect_card_ocr(roi)
-            if card:
-                self._auto_capture_template(roi, card)
-            else:
-                card = self._detect_card(roi)
+            card = self._detect_card(roi)
+            if not card:
+                card = self._detect_card_ocr(roi)
             if card:
                 cards.append(card)
         return cards
 
     def _read_community_cards(self, frame: np.ndarray) -> list:
-        """Read community cards (flop, turn, river). Uses OCR first, template as fallback."""
+        """Read community cards (flop, turn, river). Template matching first, OCR as fallback."""
         cards = []
         for region in self.regions.community_cards:
             roi = self._crop_region(frame, region)
-            card = self._detect_card_ocr(roi)
-            if card:
-                self._auto_capture_template(roi, card)
-            else:
-                card = self._detect_card(roi)
+            card = self._detect_card(roi)
+            if not card:
+                card = self._detect_card_ocr(roi)
             if card:
                 cards.append(card)
         return cards

@@ -1,12 +1,15 @@
 """
-Screen capture module — two modes:
-  A) Direct screen capture via mss (for development/testing)
-  B) Camera-based capture via OpenCV (for undetectable live play)
+Screen capture module — three modes:
+  A) WindowCapture via Win32 PrintWindow (primary — works even if window is occluded)
+  B) Direct screen capture via mss (legacy fallback)
+  C) Camera-based capture via OpenCV (for undetectable live play)
 """
 
 import numpy as np
 import cv2
 import time
+import ctypes
+import ctypes.wintypes as wt
 from abc import ABC, abstractmethod
 
 
@@ -24,8 +27,87 @@ class BaseCapture(ABC):
         pass
 
 
+class WindowCapture(BaseCapture):
+    """Capture a window's content directly via Win32 PrintWindow API.
+
+    This captures the window's rendered content regardless of whether
+    the window is in the foreground, partially occluded, or moved by
+    Windows Snap. No need to bring the window to front or worry about
+    position changes.
+    """
+
+    def __init__(self, hwnd: int):
+        """
+        Args:
+            hwnd: Windows window handle (HWND) for the target window.
+        """
+        self.hwnd = hwnd
+        self._user32 = ctypes.windll.user32
+        self._gdi32 = ctypes.windll.gdi32
+
+    def get_window_size(self) -> tuple:
+        """Get current client area size (width, height)."""
+        rect = wt.RECT()
+        self._user32.GetClientRect(self.hwnd, ctypes.byref(rect))
+        return (rect.right, rect.bottom)
+
+    def capture(self) -> np.ndarray:
+        """Capture window content via PrintWindow — works even if occluded."""
+        width, height = self.get_window_size()
+        if width < 10 or height < 10:
+            return None
+
+        # Create compatible DC and bitmap
+        wdc = self._user32.GetWindowDC(self.hwnd)
+        cdc = self._gdi32.CreateCompatibleDC(wdc)
+        bmp = self._gdi32.CreateCompatibleBitmap(wdc, width, height)
+        old_bmp = self._gdi32.SelectObject(cdc, bmp)
+
+        # PrintWindow with PW_RENDERFULLCONTENT (flag 2) captures even if occluded
+        # Fall back to flag 0 if flag 2 returns empty
+        result = self._user32.PrintWindow(self.hwnd, cdc, 2)
+        if not result:
+            self._user32.PrintWindow(self.hwnd, cdc, 0)
+
+        # Extract pixel data
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ("biSize", wt.DWORD), ("biWidth", wt.LONG),
+                ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG),
+                ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD),
+            ]
+
+        bmi = BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.biWidth = width
+        bmi.biHeight = -height  # Negative = top-down DIB
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0
+
+        buf = ctypes.create_string_buffer(width * height * 4)
+        self._gdi32.GetDIBits(cdc, bmp, 0, height, buf,
+                              ctypes.byref(bmi), 0)
+
+        # Cleanup GDI objects
+        self._gdi32.SelectObject(cdc, old_bmp)
+        self._gdi32.DeleteObject(bmp)
+        self._gdi32.DeleteDC(cdc)
+        self._user32.ReleaseDC(self.hwnd, wdc)
+
+        # Convert buffer to numpy BGR array
+        img = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 4)
+        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+    def release(self):
+        pass  # No persistent resources to release
+
+
 class ScreenCapture(BaseCapture):
-    """Direct screen capture using mss — fast, for development.
+    """Direct screen capture using mss — legacy fallback.
 
     Uses thread-local mss instances since Windows GDI device contexts
     cannot be shared across threads.

@@ -10,7 +10,6 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 import cv2
 import numpy as np
-import mss
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 DEBUG_DIR = os.path.join(_dir, "debug_images", "diagnose")
@@ -30,24 +29,25 @@ def main():
     from vision.table_reader import TableReader, TableRegions, RANKS, SUITS
     from config import Config
 
-    # 1. Find window WITHOUT bringing to front (avoids Windows Snap resizing)
+    # 1. Find window — no need to bring to front with PrintWindow capture
     ps = find_pokerstars_window(bring_to_front=False)
     if not ps:
         print("PokerStars window not found!")
         return
-    title, wx, wy, ww, wh = ps
+    title = ps[0]
+    hwnd = ps[5] if len(ps) >= 6 else None
     print(f"Window: \"{title}\"")
-    print(f"  Size: {ww}x{wh} at ({wx},{wy})")
 
-    import time
-    time.sleep(0.3)  # Brief pause for stable capture
-
-    # 2. Capture frame
-    with mss.mss() as sct:
-        region = {"top": wy, "left": wx, "width": ww, "height": wh}
-        screenshot = sct.grab(region)
-        frame = np.array(screenshot)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    # 2. Capture frame via PrintWindow (works even if window is occluded)
+    from capture.screen_capture import WindowCapture
+    if hwnd:
+        cap = WindowCapture(hwnd)
+        ww, wh = cap.get_window_size()
+        print(f"  Size: {ww}x{wh} (PrintWindow capture)")
+        frame = cap.capture()
+    else:
+        print("  ERROR: No hwnd available, cannot capture")
+        return
 
     save_img("00_full_frame.png", frame)
     print(f"  Frame: {frame.shape[1]}x{frame.shape[0]}")
@@ -178,12 +178,15 @@ def main():
             save_img(f"comm_{idx}_corner.png", corner)
             print(f"    Corner size: {corner_w}x{corner_h}")
 
-            # Top 3 template matches
-            rch, rcw = corner.shape[:2]
+            # Top 3 template matches (grayscale normalized — same as _detect_card)
+            corner_gray = cv2.cvtColor(corner, cv2.COLOR_BGR2GRAY)
+            corner_norm = cv2.normalize(corner_gray, None, 0, 255, cv2.NORM_MINMAX)
+            rch, rcw = corner_norm.shape[:2]
             scores = []
             for card_name, corner_tmpl in reader._corner_cache.items():
                 tmpl = cv2.resize(corner_tmpl, (rcw, rch), interpolation=cv2.INTER_AREA)
-                result = cv2.matchTemplate(corner, tmpl, cv2.TM_CCOEFF_NORMED)
+                tmpl_norm = cv2.normalize(tmpl, None, 0, 255, cv2.NORM_MINMAX)
+                result = cv2.matchTemplate(corner_norm, tmpl_norm, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(result)
                 scores.append((max_val, card_name))
             scores.sort(reverse=True)

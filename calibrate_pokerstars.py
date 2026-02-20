@@ -340,7 +340,7 @@ def find_pokerstars_window(bring_to_front=False):
         found = (title, cx, cy, cw, ch, hwnd)
 
     if found:
-        return found[:5]  # Return without hwnd
+        return found[:6]  # Return (title, x, y, w, h, hwnd)
     return None
 
 
@@ -482,22 +482,26 @@ def main():
         print("Se till att ett pokerbord ar oppet i PokerStars.")
         return
 
-    win_title, win_x, win_y, win_w, win_h = ps_window
-    win_x = max(0, win_x)
-    win_y = max(0, win_y)
+    win_title = ps_window[0]
+    hwnd = ps_window[5] if len(ps_window) >= 6 else None
     print(f"  Fonster: \"{win_title}\"")
-    print(f"  Storlek: {win_w}x{win_h} vid ({win_x},{win_y})")
 
-    print("  Bringar PokerStars till forgrunden...")
-    time.sleep(1.5)  # Wait for window to come to front
-
-    # Capture just the PS window
-    print("Fangar fonster...")
-    with mss.mss() as sct:
-        region = {"top": win_y, "left": win_x, "width": win_w, "height": win_h}
-        screenshot = sct.grab(region)
-        frame = np.array(screenshot)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    # Capture via PrintWindow (no need to bring to front)
+    print("Fangar fonster via PrintWindow...")
+    if hwnd:
+        from capture.screen_capture import WindowCapture
+        cap = WindowCapture(hwnd)
+        win_w, win_h = cap.get_window_size()
+        frame = cap.capture()
+    else:
+        print("  Ingen hwnd — faller tillbaka pa mss")
+        win_x, win_y, win_w, win_h = ps_window[1], ps_window[2], ps_window[3], ps_window[4]
+        with mss.mss() as sct:
+            region = {"top": win_y, "left": win_x, "width": win_w, "height": win_h}
+            screenshot = sct.grab(region)
+            frame = np.array(screenshot)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    print(f"  Storlek: {win_w}x{win_h}")
 
     print(f"  Frame: {frame.shape[1]}x{frame.shape[0]}")
 

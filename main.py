@@ -31,7 +31,7 @@ elif hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 from config import Config
-from capture.screen_capture import ScreenCapture, CameraCapture, CaptureLoop
+from capture.screen_capture import ScreenCapture, WindowCapture, CameraCapture, CaptureLoop
 from vision.table_reader import TableReader, TableCalibrator, TableRegions
 from gamestate.state import GameState, Player, ActionType, Hand, Street
 from profiles.opponent_db import OpponentDatabase
@@ -96,88 +96,78 @@ class PokerAssistant:
     def setup_capture(self):
         """Initialize the capture module based on config.
 
-        Auto-detects PokerStars window position for screen capture region.
+        Uses WindowCapture (Win32 PrintWindow) for PokerStars — captures
+        window content directly without needing it visible or in foreground.
+        Falls back to mss ScreenCapture if hwnd not available.
         """
         if self.config.capture_mode == "camera":
             self.capture = CameraCapture(self.config.camera_index)
             print("Camera capture initialized")
         else:
-            region = self.config.screen_region
-            # Auto-detect PokerStars window for capture region
             try:
                 from calibrate_pokerstars import find_pokerstars_window
                 ps = find_pokerstars_window()
-                if ps:
-                    _, wx, wy, ww, wh = ps
-                    wx, wy = max(0, wx), max(0, wy)
-                    region = {"top": wy, "left": wx, "width": ww, "height": wh}
-            except ImportError:
-                pass
-            self.capture = ScreenCapture(region)
-            print("Screen capture initialized")
+                if ps and len(ps) >= 6:
+                    title, _, _, _, _, hwnd = ps
+                    self.capture = WindowCapture(hwnd)
+                    self._ps_hwnd = hwnd
+                    w, h = self.capture.get_window_size()
+                    print(f"WindowCapture initialized: {w}x{h} (PrintWindow API)")
+                    print(f"  Window: \"{title}\"")
+                else:
+                    raise RuntimeError("PokerStars not found")
+            except Exception as e:
+                print(f"WindowCapture failed ({e}), falling back to mss")
+                region = self.config.screen_region
+                self.capture = ScreenCapture(region)
+                self._ps_hwnd = None
 
         self.capture_loop = CaptureLoop(self.capture, self.config.capture_fps)
 
     def setup_vision(self):
         """Initialize the vision module.
 
-        Auto-detects PokerStars window, captures a frame, and uses
-        auto_detect_layout to find card positions directly from the image.
-        Falls back to saved regions if auto-detection fails.
+        Captures a frame via WindowCapture (or mss fallback), runs
+        auto_detect_layout to find card positions, and stores the
+        current window size for resize detection.
         """
         import os
-        import mss
         regions = TableRegions()
 
         try:
-            from calibrate_pokerstars import find_pokerstars_window, auto_detect_layout, calculate_regions
-            ps = find_pokerstars_window()
-            if ps:
-                title, wx, wy, ww, wh = ps
-                wx, wy = max(0, wx), max(0, wy)
-                self._ps_window = (wx, wy, ww, wh)
-                print(f"Auto-detected PokerStars: \"{title}\"")
-                print(f"  Window: {ww}x{wh} at ({wx},{wy})")
+            from calibrate_pokerstars import auto_detect_layout, calculate_regions
 
-                # Capture a frame for auto-detection
-                with mss.mss() as sct:
-                    capture_region = {"top": wy, "left": wx, "width": ww, "height": wh}
-                    screenshot = sct.grab(capture_region)
-                    import numpy as np
-                    frame = np.array(screenshot)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            # Capture initial frame using our capture module (already set up)
+            frame = self.capture.capture() if self.capture else None
+
+            if frame is not None and frame.size > 0:
+                fh, fw = frame.shape[:2]
+                self._last_window_size = (fw, fh)
+                print(f"  Frame: {fw}x{fh}")
 
                 # Try card-based auto-detection
                 calc = auto_detect_layout(frame)
                 if calc is None:
                     print("  Inga kort synliga — anvander fallback-proportioner")
                     print("  (Regioner kalibreras automatiskt nar kort syns)")
-                    calc = calculate_regions(0, 0, ww, wh)
+                    calc = calculate_regions(0, 0, fw, fh)
                     self._needs_recalibration = True
                 else:
                     print(f"  Auto-detekterade kort! Card size: {calc.get('_card_size')}")
                     self._needs_recalibration = False
 
-                # Convert dict to TableRegions
-                regions.hero_card_1 = tuple(calc["hero_card_1"])
-                regions.hero_card_2 = tuple(calc["hero_card_2"])
-                regions.community_cards = [tuple(c) for c in calc["community_cards"]]
-                regions.pot_text = tuple(calc["pot_text"])
-                regions.player_regions = calc["player_regions"]
-                regions.action_buttons_area = tuple(calc.get("action_buttons_area", (0,0,0,0)))
-                regions.dealer_button_search_area = tuple(calc.get("dealer_button_search_area", (0,0,0,0)))
-                regions.dealer_button_regions = [tuple(r) for r in calc.get("dealer_button_regions", [])]
-
+                regions = self._calc_to_regions(calc)
                 print(f"  Hero card 1: {regions.hero_card_1}")
                 print(f"  Community[0]: {regions.community_cards[0]}")
                 print(f"  Pot text: {regions.pot_text}")
             else:
-                print("PokerStars window not found — falling back to saved regions")
+                print("Could not capture initial frame — using saved regions")
+                self._last_window_size = (0, 0)
                 if os.path.exists(self.config.regions_file):
                     calibrator = TableCalibrator()
                     regions = calibrator.load_regions(self.config.regions_file)
-                    print(f"Loaded table regions from {self.config.regions_file}")
         except ImportError:
+            self._last_window_size = (0, 0)
             if os.path.exists(self.config.regions_file):
                 calibrator = TableCalibrator()
                 regions = calibrator.load_regions(self.config.regions_file)
@@ -190,6 +180,48 @@ class PokerAssistant:
             regions=regions,
             tesseract_cmd=self.config.tesseract_cmd,
         )
+
+    def _calc_to_regions(self, calc: dict) -> TableRegions:
+        """Convert auto_detect_layout dict to TableRegions object."""
+        regions = TableRegions()
+        regions.hero_card_1 = tuple(calc["hero_card_1"])
+        regions.hero_card_2 = tuple(calc["hero_card_2"])
+        regions.community_cards = [tuple(c) for c in calc["community_cards"]]
+        regions.pot_text = tuple(calc["pot_text"])
+        regions.player_regions = calc["player_regions"]
+        regions.action_buttons_area = tuple(calc.get("action_buttons_area", (0, 0, 0, 0)))
+        regions.dealer_button_search_area = tuple(calc.get("dealer_button_search_area", (0, 0, 0, 0)))
+        regions.dealer_button_regions = [tuple(r) for r in calc.get("dealer_button_regions", [])]
+        return regions
+
+    def recalibrate_if_resized(self, frame: np.ndarray) -> bool:
+        """Check if window size changed and re-run layout detection if so.
+
+        Returns True if regions were recalculated.
+        """
+        if frame is None or frame.size == 0:
+            return False
+        fh, fw = frame.shape[:2]
+        current_size = (fw, fh)
+
+        if current_size == self._last_window_size:
+            return False
+
+        print(f"  Window resized: {self._last_window_size} -> {current_size}")
+        self._last_window_size = current_size
+
+        try:
+            from calibrate_pokerstars import auto_detect_layout, calculate_regions
+            calc = auto_detect_layout(frame)
+            if calc is None:
+                calc = calculate_regions(0, 0, fw, fh)
+                print("  Resize: using fallback proportions")
+            else:
+                print(f"  Resize: auto-detected card layout")
+            self.table_reader.regions = self._calc_to_regions(calc)
+            return True
+        except ImportError:
+            return False
 
     def calibrate(self):
         """Run interactive table calibration."""
@@ -703,6 +735,9 @@ class AssistantWorker(threading.Thread):
                 if frame is None:
                     time.sleep(0.05)
                     continue
+
+                # Check if window was resized — recalculate layout if so
+                assistant.recalibrate_if_resized(frame)
 
                 # Save debug overlay on first frame
                 if not debug_saved:
