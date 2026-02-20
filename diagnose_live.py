@@ -25,7 +25,7 @@ def save_img(name, img):
 
 
 def main():
-    from calibrate_pokerstars import find_pokerstars_window, calculate_regions
+    from calibrate_pokerstars import find_pokerstars_window, pokerstars_6max_layout
     from vision.table_reader import TableReader, TableRegions, RANKS, SUITS
     from config import Config
 
@@ -52,14 +52,8 @@ def main():
     save_img("00_full_frame.png", frame)
     print(f"  Frame: {frame.shape[1]}x{frame.shape[0]}")
 
-    # 3. Auto-detect layout from card positions
-    from calibrate_pokerstars import auto_detect_layout
-    calc = auto_detect_layout(frame)
-    if calc is None:
-        print("\nINGA KORT SYNLIGA — kan inte auto-detektera layout!")
-        print("Starta ett spel med kort pa bordet och kor igen.")
-        calc = calculate_regions(0, 0, ww, wh)
-        print("Anvander grova fallback-proportioner.\n")
+    # 3. Fixed proportional layout (no detection needed)
+    calc = pokerstars_6max_layout(ww, wh)
 
     regions = TableRegions()
     regions.hero_card_1 = tuple(calc["hero_card_1"])

@@ -39,181 +39,87 @@ def save_image(path, img):
             f.write(buf.tobytes())
 
 
-def auto_detect_layout(frame):
-    """Auto-detect card positions and table layout from a live frame.
+def pokerstars_6max_layout(w, h):
+    """Fixed PokerStars 6-max layout — pure proportional math.
 
-    Finds white card rectangles on the green felt, clusters them into
-    community cards and hero cards, then derives all other positions
-    (pot, players, buttons) relative to the detected cards.
+    All positions are derived from window size using proportions measured
+    from live PokerStars tables. No contour detection, no thresholds,
+    no edge cases. Works at any window size.
 
-    Returns dict with all regions, or None if detection fails.
+    Args:
+        w: Window width in pixels (client area)
+        h: Window height in pixels (client area)
+
+    Returns dict with all regions.
     """
-    fh, fw = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Card dimensions (measured from multiple window sizes)
+    card_w = int(w * 0.061)
+    card_h = int(h * 0.129)
+    border = 5  # Slack for template matching
 
-    # Find white/bright rectangles (card candidates)
-    _, white_mask = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((3, 3), np.uint8)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    card_rects = []
-    all_rects = []  # For debug
-    for c in contours:
-        x, y, cw, ch = cv2.boundingRect(c)
-        aspect = cw / max(ch, 1)
-        area = cw * ch
-        # Card should be roughly 35-150px wide, 50-200px tall
-        if 35 < cw < 150 and 50 < ch < 200 and 0.40 < aspect < 0.95 and area > 1500:
-            card_rects.append((x, y, cw, ch))
-            all_rects.append((x, y, cw, ch, aspect, area, "PASS"))
-        elif area > 1000 and 20 < cw < 200 and 30 < ch < 250:
-            all_rects.append((x, y, cw, ch, aspect, area, f"FAIL(a={aspect:.2f})"))
-    card_rects.sort(key=lambda r: r[0])
-
-    # Debug: show all candidate rects
-    if len(card_rects) < 3:
-        for r in sorted(all_rects, key=lambda r: r[5], reverse=True)[:10]:
-            x, y, cw, ch, asp, area, status = r
-            print(f"    rect ({x},{y},{cw},{ch}) aspect={asp:.2f} area={area} {status}")
-
-    if len(card_rects) < 2:
-        print(f"  Auto-detect: only {len(card_rects)} card rectangles found, need at least 2")
-        return None
-
-    # Cluster cards by y-position (community vs hero)
-    y_groups = {}
-    for rect in card_rects:
-        x, y, cw, ch = rect
-        placed = False
-        for gy in list(y_groups.keys()):
-            if abs(y - gy) < ch * 0.5:  # Same row if within half a card height
-                y_groups[gy].append(rect)
-                placed = True
-                break
-        if not placed:
-            y_groups[y] = [rect]
-
-    # Find community cards: group with 3-5 cards in a row
-    comm_cards = None
-    hero_cards = None
-    for gy in sorted(y_groups.keys()):
-        group = y_groups[gy]
-        if 3 <= len(group) <= 5 and comm_cards is None:
-            comm_cards = sorted(group, key=lambda r: r[0])
-        elif len(group) == 2 and comm_cards is not None:
-            # Hero cards: 2 cards below community cards
-            hero_cards = sorted(group, key=lambda r: r[0])
-
-    if comm_cards is None:
-        print(f"  Auto-detect: no community card row found (groups: {[len(g) for g in y_groups.values()]})")
-        return None
-
-    # === Extract measurements from community cards ===
-    comm_y = comm_cards[0][1]
-    comm_first_x = comm_cards[0][0]
-    card_w = int(np.mean([c[2] for c in comm_cards]))
-    card_h = int(np.mean([c[3] for c in comm_cards]))
-
-    if len(comm_cards) > 1:
-        gaps = [comm_cards[i+1][0] - comm_cards[i][0] for i in range(len(comm_cards)-1)]
-        card_gap = int(np.mean(gaps))
-    else:
-        card_gap = int(card_w * 1.15)
-
-    # Use detected card positions directly instead of extrapolating from center.
-    # Detected cards might be the flop (first 3), not the middle of 5.
-    # Place detected cards at their actual positions, extrapolate the rest.
-    comm_start_x = comm_cards[0][0]  # First detected card IS the first visible card
-
-    # Table center: estimate from first card + 2 gaps (center of 5 cards)
-    table_center_x = comm_start_x + 2 * card_gap + card_w // 2
-
-    print(f"  Community: {len(comm_cards)} cards at y={comm_y}, center_x={table_center_x}")
-    print(f"  Card size: {card_w}x{card_h}, gap={card_gap}")
-
-    # === Hero cards ===
-    if hero_cards:
-        hero_y = hero_cards[0][1]
-        hero_x1 = hero_cards[0][0]
-        hero_x2 = hero_cards[1][0]
-        hero_w = int(np.mean([c[2] for c in hero_cards]))
-        hero_h = int(np.mean([c[3] for c in hero_cards]))
-        print(f"  Hero cards: 2 cards at y={hero_y}, x=[{hero_x1},{hero_x2}]")
-    else:
-        # Estimate hero card position: ~2.0 card heights below community
-        # PS hero cards are further down (below the pot text and community area)
-        hero_y = comm_y + int(card_h * 2.0)
-        hero_w = card_w
-        hero_h = card_h
-        hero_x1 = table_center_x - card_gap // 2 - card_w
-        hero_x2 = table_center_x + card_gap // 2
-        print(f"  Hero cards: estimated at y={hero_y}")
-
-    # === Pot text: just above community cards ===
-    # PS shows "Pott: X XXX" centered above the cards, ~0.7 card heights up
-    pot_y = comm_y - int(card_h * 0.8)
-    pot_x = table_center_x - int(card_gap * 2)
-    pot_w = int(card_gap * 4)
-    pot_h = int(card_h * 0.45)
-
-    # === Build regions dict ===
-    border = 5  # Small border around card ROIs for template matching slack
-    regions = {}
-    regions["hero_card_1"] = [hero_x1 - border, hero_y - border,
-                               hero_w + 2*border, hero_h + 2*border]
-    regions["hero_card_2"] = [hero_x2 - border, hero_y - border,
-                               hero_w + 2*border, hero_h + 2*border]
+    # === Community cards (5 cards, centered horizontally) ===
+    comm_y = int(h * 0.358)
+    comm_start_x = int(w * 0.340)
+    comm_gap = int(w * 0.068)
 
     community = []
     for i in range(5):
-        if i < len(comm_cards):
-            # Use actual detected position for known cards
-            cx = comm_cards[i][0]
-        else:
-            # Extrapolate remaining positions from last detected card
-            last_x = comm_cards[-1][0]
-            cx = last_x + (i - len(comm_cards) + 1) * card_gap
+        cx = comm_start_x + i * comm_gap
         community.append([cx - border, comm_y - border,
-                         card_w + 2*border, card_h + 2*border])
+                         card_w + 2 * border, card_h + 2 * border])
+
+    # === Hero cards (2 cards, bottom center) ===
+    hero_y = int(h * 0.627)
+    hero_x1 = int(w * 0.443)
+    hero_x2 = int(w * 0.507)
+
+    regions = {}
+    regions["hero_card_1"] = [hero_x1 - border, hero_y - border,
+                               card_w + 2 * border, card_h + 2 * border]
+    regions["hero_card_2"] = [hero_x2 - border, hero_y - border,
+                               card_w + 2 * border, card_h + 2 * border]
     regions["community_cards"] = community
 
+    # === Pot text (centered above community cards) ===
+    pot_w = int(w * 0.25)
+    pot_h = int(h * 0.045)
+    pot_x = int(w * 0.5) - pot_w // 2
+    pot_y = comm_y - int(h * 0.06)
     regions["pot_text"] = [pot_x, pot_y, pot_w, pot_h]
 
-    # === Player positions (6-max, relative to table center and card positions) ===
-    # Estimated from standard PS 6-max layout
-    table_left = comm_start_x - int(card_gap * 2)
-    table_right = comm_start_x + 5 * card_gap + int(card_gap * 2)
-    table_top = comm_y - int(card_h * 3)
-    table_bottom = hero_y + hero_h + int(card_h * 2)
-    name_w = int((table_right - table_left) * 0.18)
-    name_h = int(card_h * 0.35)
+    # === Table geometry for player positions ===
+    table_center_x = int(w * 0.5)
+    table_left = int(w * 0.08)
+    table_right = int(w * 0.92)
+    table_top = int(h * 0.08)
+    table_bottom = int(h * 0.88)
+    name_w = int(w * 0.12)
+    name_h = int(h * 0.035)
 
-    player_regions = []
+    # === Player positions (6-max) ===
     seat_positions = [
         # Seat 0: Hero (bottom center)
-        (table_center_x - name_w//2, hero_y + hero_h + int(card_h * 0.5)),
+        (table_center_x - name_w // 2, hero_y + card_h + int(h * 0.04)),
         # Seat 1: Bottom right
-        (table_right - name_w, hero_y - int(card_h * 0.5)),
+        (table_right - name_w, int(h * 0.58)),
         # Seat 2: Top right
-        (table_right - name_w, table_top + int(card_h * 0.5)),
+        (table_right - name_w, int(h * 0.18)),
         # Seat 3: Top center
-        (table_center_x - name_w//2, table_top - name_h),
+        (table_center_x - name_w // 2, table_top),
         # Seat 4: Top left
-        (table_left, table_top + int(card_h * 0.5)),
+        (table_left, int(h * 0.18)),
         # Seat 5: Bottom left
-        (table_left, hero_y - int(card_h * 0.5)),
+        (table_left, int(h * 0.58)),
     ]
     names = ["Hero", "Hoger", "Hoger-upp", "Uppe", "Vanster-upp", "Vanster"]
+
+    player_regions = []
     for i, (px, py) in enumerate(seat_positions):
-        # Clamp to frame bounds
-        px = max(0, min(px, fw - name_w))
-        py = max(0, min(py, fh - name_h))
-
+        px = max(0, min(px, w - name_w))
+        py = max(0, min(py, h - name_h))
         stack_y = py + name_h + 2
-        bet_x = int((px + table_center_x) / 2)  # Between player and center
+        bet_x = int((px + table_center_x) / 2)
         bet_y = int((py + comm_y) / 2)
-
         player_regions.append({
             "_position": names[i],
             "name": [px, py, name_w, name_h],
@@ -223,7 +129,8 @@ def auto_detect_layout(frame):
     regions["player_regions"] = player_regions
 
     # Action buttons (bottom right)
-    regions["action_buttons_area"] = [int(fw * 0.65), int(fh * 0.87), int(fw * 0.32), int(fh * 0.07)]
+    regions["action_buttons_area"] = [int(w * 0.65), int(h * 0.87),
+                                       int(w * 0.32), int(h * 0.07)]
 
     # Dealer button search areas
     dealer_regions = []
@@ -236,13 +143,16 @@ def auto_detect_layout(frame):
                                              table_right - table_left,
                                              table_bottom - table_top]
 
-    # Store detection metadata
+    # Metadata
     regions["_auto_detected"] = True
     regions["_card_size"] = [card_w, card_h]
-    regions["_card_gap"] = card_gap
+    regions["_card_gap"] = comm_gap
     regions["_table_center_x"] = table_center_x
     regions["_comm_y"] = comm_y
     regions["_hero_y"] = hero_y
+
+    print(f"  Layout: {w}x{h}, card={card_w}x{card_h}, "
+          f"comm_y={comm_y}, hero_y={hero_y}")
 
     return regions
 
@@ -380,43 +290,8 @@ def pct_to_pixels(pct_region, table_x, table_y, table_w, table_h):
 
 
 def calculate_regions(table_x, table_y, table_w, table_h):
-    """Fallback: calculate regions from window position using rough proportions.
-
-    Only used when auto_detect_layout() fails (no cards visible).
-    These proportions are approximate and may need adjustment per window.
-    """
-    regions = {}
-
-    # Very rough fallback — prefer auto_detect_layout() instead
-    regions["hero_card_1"] = [int(table_x + table_w * 0.42), int(table_y + table_h * 0.78),
-                               int(table_w * 0.06), int(table_h * 0.11)]
-    regions["hero_card_2"] = [int(table_x + table_w * 0.49), int(table_y + table_h * 0.78),
-                               int(table_w * 0.06), int(table_h * 0.11)]
-
-    community = []
-    for i in range(5):
-        cx = 0.30 + i * 0.065
-        community.append([int(table_x + cx * table_w), int(table_y + table_h * 0.58),
-                          int(table_w * 0.065), int(table_h * 0.13)])
-    regions["community_cards"] = community
-    regions["pot_text"] = [int(table_x + table_w * 0.35), int(table_y + table_h * 0.50),
-                           int(table_w * 0.25), int(table_h * 0.05)]
-
-    names = ["Hero", "Hoger", "Hoger-upp", "Uppe", "Vanster-upp", "Vanster"]
-    player_regions = []
-    for i, name in enumerate(names):
-        player_regions.append({
-            "_position": name,
-            "name": [0, 0, 1, 1],
-            "stack": [0, 0, 1, 1],
-            "bet": [0, 0, 1, 1],
-        })
-    regions["player_regions"] = player_regions
-    regions["action_buttons_area"] = [0, 0, 1, 1]
-    regions["dealer_button_regions"] = [[0, 0, 1, 1]] * 6
-    regions["dealer_button_search_area"] = [table_x, table_y, table_w, table_h]
-
-    return regions
+    """Backwards-compatible wrapper — delegates to pokerstars_6max_layout."""
+    return pokerstars_6max_layout(table_w, table_h)
 
 
 def draw_regions(frame, regions, table_rect):
@@ -505,17 +380,13 @@ def main():
 
     print(f"  Frame: {frame.shape[1]}x{frame.shape[0]}")
 
-    # Try auto-detection first
-    print("\nAuto-detekterar kort-positioner...")
-    regions = auto_detect_layout(frame)
+    # Calculate layout from fixed proportions (no detection needed)
+    print("\nBeraknar layout fran fasta proportioner...")
+    regions = pokerstars_6max_layout(win_w, win_h)
 
-    if regions is None:
-        print("\nINGA KORT HITTADES! Forsoker med gron-bords-detektion...")
-        regions = calculate_regions(0, 0, win_w, win_h)
-        print("  Anvander grova fallback-proportioner.")
-        print("  Kor om nar kort ar synliga pa bordet!")
-
-    # Save
+    # Save — use client area coords from find_pokerstars_window
+    win_x = ps_window[1] if ps_window else 0
+    win_y = ps_window[2] if ps_window else 0
     regions["_poker_window"] = [win_x, win_y, win_w, win_h]
     regions["_screen_capture_region"] = {
         "top": win_y, "left": win_x, "width": win_w, "height": win_h,

@@ -135,9 +135,9 @@ class PokerAssistant:
         regions = TableRegions()
 
         try:
-            from calibrate_pokerstars import auto_detect_layout, calculate_regions
+            from calibrate_pokerstars import pokerstars_6max_layout
 
-            # Capture initial frame using our capture module (already set up)
+            # Capture initial frame to get window size
             frame = self.capture.capture() if self.capture else None
 
             if frame is not None and frame.size > 0:
@@ -145,16 +145,9 @@ class PokerAssistant:
                 self._last_window_size = (fw, fh)
                 print(f"  Frame: {fw}x{fh}")
 
-                # Try card-based auto-detection
-                calc = auto_detect_layout(frame)
-                if calc is None:
-                    print("  Inga kort synliga — anvander fallback-proportioner")
-                    print("  (Regioner kalibreras automatiskt nar kort syns)")
-                    calc = calculate_regions(0, 0, fw, fh)
-                    self._needs_recalibration = True
-                else:
-                    print(f"  Auto-detekterade kort! Card size: {calc.get('_card_size')}")
-                    self._needs_recalibration = False
+                # Fixed proportional layout — no detection needed
+                calc = pokerstars_6max_layout(fw, fh)
+                self._needs_recalibration = False
 
                 regions = self._calc_to_regions(calc)
                 print(f"  Hero card 1: {regions.hero_card_1}")
@@ -211,13 +204,8 @@ class PokerAssistant:
         self._last_window_size = current_size
 
         try:
-            from calibrate_pokerstars import auto_detect_layout, calculate_regions
-            calc = auto_detect_layout(frame)
-            if calc is None:
-                calc = calculate_regions(0, 0, fw, fh)
-                print("  Resize: using fallback proportions")
-            else:
-                print(f"  Resize: auto-detected card layout")
+            from calibrate_pokerstars import pokerstars_6max_layout
+            calc = pokerstars_6max_layout(fw, fh)
             self.table_reader.regions = self._calc_to_regions(calc)
             return True
         except ImportError:
@@ -738,20 +726,6 @@ class AssistantWorker(threading.Thread):
 
                 # Check if window was resized — recalculate layout if so
                 assistant.recalibrate_if_resized(frame)
-
-                # If started between hands (no cards visible), retry layout
-                # detection until we get a proper card-based calibration
-                if getattr(assistant, '_needs_recalibration', False):
-                    try:
-                        from calibrate_pokerstars import auto_detect_layout
-                        calc = auto_detect_layout(frame)
-                        if calc is not None:
-                            assistant.table_reader.regions = assistant._calc_to_regions(calc)
-                            assistant._needs_recalibration = False
-                            debug_saved = False  # Re-save overlay with new regions
-                            print(f"  Recalibrated! Card size: {calc.get('_card_size')}")
-                    except ImportError:
-                        pass
 
                 # Save debug overlay on first frame
                 if not debug_saved:
