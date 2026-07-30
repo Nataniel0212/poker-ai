@@ -62,12 +62,15 @@ class TableReading:
     players: list = field(default_factory=list)          # [{name, stack, bet, seat}]
     dealer_seat: int = -1
     available_actions: list = field(default_factory=list) # ['fold', 'call', 'raise']
+    call_amount: float = 0.0  # Amount to call if facing a bet
     confidence: float = 0.0  # Overall confidence in the reading
 
 
 # Card rank and suit mappings
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A']
 SUITS = ['s', 'h', 'd', 'c']  # spades, hearts, diamonds, clubs
+VALID_RANKS = set(RANKS)
+VALID_SUITS = set(SUITS)
 
 
 class TableReader:
@@ -130,13 +133,20 @@ class TableReader:
             print("No card templates found — card detection will rely on OCR only")
 
     def read_table(self, frame: np.ndarray) -> TableReading:
-        """Read all elements from a poker table frame.
+        """Read real-time elements from the poker table frame.
+
+        Only reads what can't be gotten from hand history files:
+          - Hero cards (template matching + OCR fallback)
+          - Community cards (template matching + OCR fallback)
+          - Pot amount (OCR)
+
+        Players, dealer, stacks, and actions are handled by the HH parser.
 
         Args:
             frame: BGR numpy array of the poker table
 
         Returns:
-            TableReading with all detected elements
+            TableReading with detected cards and pot
         """
         reading = TableReading()
         self._frame_count += 1
@@ -150,28 +160,23 @@ class TableReader:
         # Read pot (moderate — single OCR call)
         reading.pot = self._read_pot(frame)
 
-        # Read player info + dealer (slow — many OCR calls)
-        # Only update every Nth frame to maintain good FPS
-        if self._frame_count % self._player_update_interval == 1:
-            self._cached_players = self._read_players(frame)
-            self._cached_dealer = self._find_dealer(frame)
-        reading.players = self._cached_players
-        reading.dealer_seat = self._cached_dealer
-
-        # Read available actions
-        reading.available_actions = self._read_actions(frame)
-
-        # Calculate overall confidence
+        # Confidence based on what we can see
         conf_scores = []
         if reading.hero_cards:
             conf_scores.append(1.0)
         if reading.pot > 0:
             conf_scores.append(1.0)
-        if reading.dealer_seat >= 0:
-            conf_scores.append(1.0)
         reading.confidence = sum(conf_scores) / max(len(conf_scores), 1)
 
         return reading
+
+    def _validate_card(self, card_str: Optional[str]) -> Optional[str]:
+        """Validate card format (e.g. 'As', '9h'). Returns None if invalid."""
+        if not card_str or len(card_str) != 2:
+            return None
+        if card_str[0] not in VALID_RANKS or card_str[1] not in VALID_SUITS:
+            return None
+        return card_str
 
     def _find_card_body(self, roi: np.ndarray) -> Optional[np.ndarray]:
         """Find the actual card within the ROI by locating the bright card body.
@@ -293,7 +298,7 @@ class TableReader:
                 and best_match[0] != second_best_match[0]):
             return None
 
-        return best_match
+        return self._validate_card(best_match)
 
     def _is_card_present(self, roi: np.ndarray) -> bool:
         """Check if a card is actually present (not just green felt or dark background).
@@ -386,10 +391,13 @@ class TableReader:
             # Also try inverted (dark text on light background)
             for img in [thresh, cv2.bitwise_not(thresh)]:
                 for psm in psm_modes:
-                    text = pytesseract.image_to_string(
-                        img,
-                        config=f'{psm} -c tessedit_char_whitelist=23456789TJQKA10'
-                    ).strip()
+                    try:
+                        text = pytesseract.image_to_string(
+                            img,
+                            config=f'{psm} -c tessedit_char_whitelist=23456789TJQKA10'
+                        ).strip()
+                    except Exception:
+                        text = ""
                     if not text:
                         continue
                     text = text.upper().replace(' ', '')
@@ -401,16 +409,16 @@ class TableReader:
                         rank = ch
                         break
                     # Common OCR misreads
-                    ocr_fix = {'O': 'T', 'I': 'J', 'L': 'J', 'B': '8',
+                    ocr_fix = {'O': '9', 'I': 'J', 'L': 'J', 'B': '8',
                                'S': '5', 'G': '6', 'D': '0', 'Z': '2',
                                'P': '9', 'R': 'K'}
                     if ch in ocr_fix:
                         fixed = ocr_fix[ch]
-                        if fixed == '0' or fixed == 'T':
-                            rank = 'T'
+                        if fixed == '0':
+                            rank = 'T'  # '0' means Ten
                         elif fixed in '23456789':
                             rank = fixed
-                        elif fixed in 'JKA':
+                        elif fixed in 'TJQKA':
                             rank = fixed
                         break
                 if rank:
@@ -422,7 +430,7 @@ class TableReader:
             return None
 
         suit = self._detect_suit(card)
-        return f"{rank}{suit}"
+        return self._validate_card(f"{rank}{suit}")
 
     def _detect_suit(self, roi: np.ndarray) -> str:
         """Detect card suit using color + shape analysis (standard 2-color deck).
@@ -702,7 +710,10 @@ class TableReader:
         else:
             config = "--psm 7 -c tessedit_char_whitelist=0123456789.$,kKmMBb: "
 
-        text = pytesseract.image_to_string(scaled, config=config).strip()
+        try:
+            text = pytesseract.image_to_string(scaled, config=config).strip()
+        except Exception:
+            text = ""
 
         return text
 
@@ -735,181 +746,24 @@ class TableReader:
             return 0.0
 
     def _read_pot(self, frame: np.ndarray) -> float:
-        """Read the pot amount."""
-        # Use name mode since pot text may contain "Pott:" prefix
-        text = self._read_text(frame, self.regions.pot_text, mode="name")
-        return self._parse_amount(text)
+        """Read the pot amount.
 
-    def _clean_name(self, name: str) -> str:
-        """Clean OCR artifacts from player name.
-
-        Common artifacts:
-        - Dealer button "D" read as leading "v", "d", "D"
-        - Bet/action text bleeding: "bd", "Bd", prefix fragments
-        - Trailing action words: "Raise", "Call", "Fold"
+        Uses amount mode (digit whitelist) for cleaner OCR, then
+        _parse_amount strips any prefix like 'Pott:'.
+        Falls back to name mode if amount mode returns nothing.
         """
-        import re
-        if not name:
-            return ""
+        text = self._read_text(frame, self.regions.pot_text, mode="amount")
+        pot = self._parse_amount(text)
+        if pot <= 0:
+            # Fallback: name mode catches "Pott: 14 665" style text
+            text = self._read_text(frame, self.regions.pot_text, mode="name")
+            pot = self._parse_amount(text)
+        return pot
 
-        # Remove non-alphanumeric chars from start/end
-        name = re.sub(r'^[^a-zA-Z0-9]+', '', name)
-        name = re.sub(r'[^a-zA-Z0-9]+$', '', name)
-        name = name.strip()
-
-        # Remove common OCR prefix artifacts (1-2 char noise before real name)
-        # "v Nataniel02" → "Nataniel02", "bd Raise" → "Raise" (then filtered)
-        # "D PlayerName" → "PlayerName"
-        name = re.sub(r'^[vVdDbB][dD]?\s+', '', name)
-
-        # Remove trailing action words that bleed into name region
-        name = re.sub(r'\s+(Fold|Call|Raise|Check|Bet|All.?[Ii]n|Sit\s*Out).*$',
-                      '', name, flags=re.IGNORECASE)
-
-        # Remove leading single char followed by space (likely dealer button noise)
-        name = re.sub(r'^[a-zA-Z]\s+', '', name)
-
-        return name.strip()
-
-    def _is_valid_name(self, name: str) -> bool:
-        """Check if OCR text is a valid player name (not green felt noise)."""
-        if not name or len(name) <= 2:
-            return False
-        lower = name.lower().strip()
-        # Common noise patterns from green felt
-        noise = {"re", "ae", "er", "ar", "or", "en", "et", "po", "bd", "vd"}
-        if lower in noise:
-            return False
-        # Poker action words (not player names)
-        actions = {"fold", "call", "raise", "check", "bet", "allin", "all-in",
-                   "sit out", "sitting out", "away", "dealer"}
-        if lower in actions:
-            return False
-        # Too short after cleaning is suspicious
-        if len(name) <= 1:
-            return False
-        return True
-
-    def _read_players(self, frame: np.ndarray) -> list:
-        """Read all player info (name, stack, current bet)."""
-        players = []
-        for i, pregion in enumerate(self.regions.player_regions):
-            player = {
-                "seat": i,
-                "name": "",
-                "stack": 0.0,
-                "bet": 0.0,
-            }
-
-            if "name" in pregion:
-                name_text = self._read_text(frame, pregion["name"], mode="name")
-                name_text = self._clean_name(name_text)
-                if self._is_valid_name(name_text):
-                    player["name"] = name_text
-
-            if "stack" in pregion:
-                stack_text = self._read_text(frame, pregion["stack"])
-                stack = self._parse_amount(stack_text)
-                # Sanity check: reject absurd values (OCR noise)
-                if stack > self._max_stack:
-                    stack = 0.0
-                player["stack"] = stack
-
-            if "bet" in pregion:
-                bet_text = self._read_text(frame, pregion["bet"])
-                player["bet"] = self._parse_amount(bet_text)
-
-            if player["name"] or player["stack"] > 0:
-                players.append(player)
-
-        return players
-
-    def _find_dealer(self, frame: np.ndarray) -> int:
-        """Find the dealer position by detecting who posted blinds.
-
-        Reads bet amounts for each player. The small blind is the smallest
-        non-zero bet, and the dealer sits one position before the SB
-        (in 6-max: seat before SB going clockwise).
-        """
-        # Read bets for all players
-        bets = []
-        for i, pregion in enumerate(self.regions.player_regions):
-            if "bet" not in pregion:
-                bets.append((i, 0.0))
-                continue
-            bet_text = self._read_text(frame, pregion["bet"])
-            bet = self._parse_amount(bet_text)
-            bets.append((i, bet))
-
-        # Find seats with non-zero bets (potential blinds)
-        active_bets = [(seat, bet) for seat, bet in bets if bet > 0]
-
-        if len(active_bets) < 2:
-            return -1
-
-        # Sort by bet size — smallest is SB, second is BB
-        active_bets.sort(key=lambda x: x[1])
-        sb_seat = active_bets[0][0]
-
-        # Dealer is one seat before SB (going backwards in seat order)
-        num_seats = len(self.regions.player_regions)
-        dealer_seat = (sb_seat - 1) % num_seats
-
-        return dealer_seat
-
-    def _detect_dealer_button(self, roi: np.ndarray) -> float:
-        """Score how likely a region contains the dealer button.
-
-        Returns a confidence score (0-1). Looks for:
-        1. A bright white/cream circular blob
-        2. Roughly circular shape (aspect ratio ~1.0)
-        """
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-        # Dealer button is bright white/cream: low saturation, high value
-        white_mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([30, 60, 255]))
-
-        # Clean up noise
-        kernel = np.ones((3, 3), np.uint8)
-        white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
-        white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
-
-        contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return 0.0
-
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-
-        # Dealer button should be a reasonable size (not tiny noise, not huge)
-        roi_area = roi.shape[0] * roi.shape[1]
-        area_ratio = area / max(roi_area, 1)
-        if area_ratio < 0.02 or area_ratio > 0.5:
-            return 0.0
-
-        # Check circularity: perimeter^2 / (4 * pi * area) ≈ 1.0 for circle
-        perimeter = cv2.arcLength(largest, True)
-        if perimeter == 0:
-            return 0.0
-        circularity = (4 * 3.14159 * area) / (perimeter * perimeter)
-
-        # Check aspect ratio of bounding rect (~1.0 for circle)
-        x, y, w, h = cv2.boundingRect(largest)
-        aspect = min(w, h) / max(w, h) if max(w, h) > 0 else 0
-
-        # Combined score: good circle = high circularity + aspect near 1.0
-        if circularity < 0.5 or aspect < 0.6:
-            return 0.0
-
-        # Score based on circularity and area ratio
-        return circularity * area_ratio * 10  # Scale up for comparison
-
-    def _read_actions(self, frame: np.ndarray) -> list:
-        """Read available action buttons."""
-        # This would detect which buttons are visible (fold, check, call, raise, bet)
-        # For now, returns common defaults
-        return ["fold", "check", "call", "raise"]
+    # NOTE: _read_players, _find_dealer, _read_actions have been removed.
+    # Players, dealer position, stacks, and actions now come from
+    # hand history files (history/hh_parser.py) which is far more reliable
+    # than OCR. Only card detection and pot reading remain here.
 
 
 class TableCalibrator:

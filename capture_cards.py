@@ -83,7 +83,7 @@ def capture_mode():
         print("PokerStars not found!")
         return
 
-    title, wx, wy, ww, wh = ps
+    title, wx, wy, ww, wh, _hwnd = ps
     wx, wy = max(0, wx), max(0, wy)
     print(f"Found: {ww}x{wh} at ({wx},{wy})")
 

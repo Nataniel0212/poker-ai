@@ -39,6 +39,8 @@ from profiles.opponent_db import OpponentDatabase
 from strategy.engine import StrategyEngine, Recommendation
 from llm.advisor import PokerAdvisor, AdvisorConfig
 from ui.window import PokerUI, ConsoleUI, UIState
+from history.hh_parser import HandHistoryMonitor, HHHand
+from history.opponent_tracker import OpponentTracker
 
 
 def _safe_int(value, default=0):
@@ -63,6 +65,8 @@ class PokerAssistant:
         self._last_hero_cards = []
         self._last_community_cards = []
         self._last_pot = 0.0
+        self._last_pot_at_street_start = 0.0  # For pot-diff action inference
+        self._last_street = "preflop"
         self._no_cards_frames = 0  # Counter for frames with no hero cards
         try:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -94,6 +98,16 @@ class PokerAssistant:
         self.capture = None
         self.capture_loop = None
 
+        # Hand history monitor + opponent tracker
+        self.hh_monitor = None
+        self.opponent_tracker = OpponentTracker(
+            self.opponent_db,
+            hero_name=self.config.hero_name,
+        )
+        # Latest completed hand from HH (used for player/position info)
+        self._latest_hh_hand = None
+        self._hh_lock = threading.Lock()
+
     def setup_capture(self):
         """Initialize the capture module based on config.
 
@@ -115,6 +129,15 @@ class PokerAssistant:
                     w, h = self.capture.get_window_size()
                     print(f"WindowCapture initialized: {w}x{h} (PrintWindow API)")
                     print(f"  Window: \"{title}\"")
+                    # Parse blinds from window title (e.g. "100/200")
+                    import re
+                    blind_match = re.search(r'(\d+)/(\d+)', title)
+                    if blind_match:
+                        sb = float(blind_match.group(1))
+                        bb = float(blind_match.group(2))
+                        self.config.default_sb = sb
+                        self.config.default_bb = bb
+                        print(f"  Blinds: {sb}/{bb} (from window title)")
                 else:
                     raise RuntimeError("PokerStars not found")
             except Exception as e:
@@ -188,6 +211,146 @@ class PokerAssistant:
         regions.dealer_button_regions = [tuple(r) for r in calc.get("dealer_button_regions", [])]
         return regions
 
+    def setup_hand_history(self):
+        """Initialize hand history monitoring.
+
+        1. Auto-detect HH directory if not configured
+        2. Load all existing hands and build opponent profiles
+        3. Start background monitor for new hands
+        """
+        import os
+        hh_dir = self.config.hh_dir
+
+        # Auto-detect HH directory
+        if not hh_dir:
+            candidates = [
+                os.path.expandvars(r"%LOCALAPPDATA%\PokerStars.SE\HandHistory"),
+                os.path.expandvars(r"%LOCALAPPDATA%\PokerStars\HandHistory"),
+                os.path.join(os.path.expanduser("~"), "Documents", "PokerStars", "HandHistory"),
+                os.path.expandvars(r"%APPDATA%\PokerStars.SE\HandHistory"),
+            ]
+            for candidate in candidates:
+                if os.path.isdir(candidate):
+                    hh_dir = candidate
+                    break
+
+            # Also check subdirectories (PokerStars puts user folders inside)
+            if hh_dir:
+                for sub in os.listdir(hh_dir):
+                    subpath = os.path.join(hh_dir, sub)
+                    if os.path.isdir(subpath):
+                        # Use the user subfolder if it has .txt files
+                        if any(f.endswith('.txt') for f in os.listdir(subpath)):
+                            hh_dir = subpath
+                            break
+
+        if not hh_dir or not os.path.isdir(hh_dir):
+            print("  HH: Ingen hand history-mapp hittad.")
+            print("      Aktivera i PokerStars: Settings > Playing History > Hand History")
+            print("      Eller ange sokvag i config.hh_dir")
+            return
+
+        self.config.hh_dir = hh_dir
+        print(f"  HH: {hh_dir}")
+
+        # Create monitor with callback
+        self.hh_monitor = HandHistoryMonitor(
+            hh_dir=hh_dir,
+            callback=self._on_new_hh_hand,
+            poll_interval=self.config.hh_poll_interval,
+            hero_name=self.config.hero_name,
+        )
+
+        # Load existing hands and build profiles
+        existing = self.hh_monitor.load_existing()
+        if existing:
+            self.opponent_tracker.process_hands(existing)
+            self._latest_hh_hand = existing[-1]
+            # Auto-detect hero name from first hand
+            if not self.config.hero_name and existing[0].hero_name:
+                self.config.hero_name = existing[0].hero_name
+                self.opponent_tracker.hero_name = existing[0].hero_name
+                print(f"  HH: Hero = {self.config.hero_name}")
+
+        # Start background monitoring
+        self.hh_monitor.start()
+
+    def _on_new_hh_hand(self, hand: HHHand):
+        """Callback when a new hand is detected from hand history files."""
+        with self._hh_lock:
+            self._latest_hh_hand = hand
+
+        # Update opponent stats
+        self.opponent_tracker.process_hand(hand)
+
+        # Auto-detect hero name if not set
+        if not self.config.hero_name and hand.hero_name:
+            self.config.hero_name = hand.hero_name
+            self.opponent_tracker.hero_name = hand.hero_name
+
+        # Update game state with HH data
+        self._update_gamestate_from_hh(hand)
+
+        print(f"  HH: Hand #{hand.hand_id} parsed "
+              f"({len(hand.players)}p, pot={hand.total_pot:.2f})")
+
+    def _update_gamestate_from_hh(self, hand: HHHand):
+        """Update GameState with data from a completed HH hand.
+
+        This creates a proper Hand object with accurate players, positions,
+        actions, and community cards from the hand history.
+        """
+        players = []
+        for hp in hand.players:
+            p = Player(
+                name=hp.name,
+                seat=hp.seat,
+                stack=hp.stack,
+                is_hero=(hp.name == self.config.hero_name),
+                hole_cards=hp.hole_cards,
+            )
+            players.append(p)
+
+        if not players:
+            return
+
+        # Record the previous hand before creating new one
+        if self.game_state.current_hand and self.game_state.current_hand.actions:
+            self.game_state.hand_history.append(self.game_state.current_hand)
+
+        self.game_state.new_hand(
+            hand_number=self.game_state.hands_played + 1,
+            players=players,
+            dealer_seat=hand.dealer_seat,
+            small_blind=hand.small_blind,
+            big_blind=hand.big_blind,
+        )
+
+        # Replay all actions into game state
+        action_map = {
+            "fold": ActionType.FOLD,
+            "check": ActionType.CHECK,
+            "call": ActionType.CALL,
+            "bet": ActionType.BET,
+            "raise": ActionType.RAISE,
+            "all_in": ActionType.ALL_IN,
+            "post_blind": ActionType.POST_BLIND,
+        }
+
+        for hh_action in hand.all_actions:
+            at = action_map.get(hh_action.action)
+            if at:
+                amount = hh_action.total if hh_action.total > 0 else hh_action.amount
+                self.game_state.add_action(hh_action.player, at, amount)
+
+        # Set community cards
+        if hand.community_cards:
+            self.game_state.update_community_cards(hand.community_cards)
+
+        # Set pot
+        if hand.total_pot > 0:
+            self.game_state.update_pot(hand.total_pot)
+
     def recalibrate_if_resized(self, frame: np.ndarray) -> bool:
         """Check if window size changed and re-run layout detection if so.
 
@@ -230,22 +393,35 @@ class PokerAssistant:
     def process_frame(self, frame) -> UIState:
         """Process a single frame through the entire pipeline.
 
+        Screen reading is ONLY used for:
+          - Hero cards (2 hole cards)
+          - Community cards (flop/turn/river)
+          - Current pot
+
+        All other info (players, positions, actions, stacks) comes from
+        hand history files via the HH parser.
+
         Returns a UIState ready to be displayed.
         """
-        # 1. Read the table
+        # 1. Read real-time data from screen (cards + pot only)
         reading = self.table_reader.read_table(frame)
 
         # Sticky state: keep last known values when OCR misses
-        # Only accept hero cards if we see exactly 2 distinct cards
         if (len(reading.hero_cards) == 2
                 and reading.hero_cards[0] != reading.hero_cards[1]):
             hero_cards = reading.hero_cards
         else:
             hero_cards = self._last_hero_cards
         community_cards = reading.community_cards or self._last_community_cards
-        pot = reading.pot if reading.pot > 0 else self._last_pot
 
-        # Remove duplicate cards from community (OCR artifact)
+        # Pot with sanity check
+        pot = reading.pot if reading.pot > 0 else self._last_pot
+        bb = self.config.default_bb or 1.0
+        max_reasonable_pot = bb * 500
+        if pot > max_reasonable_pot and self._last_pot > 0:
+            pot = self._last_pot
+
+        # Remove duplicate cards
         if community_cards:
             seen = set()
             deduped = []
@@ -255,23 +431,16 @@ class PokerAssistant:
                     deduped.append(c)
             community_cards = deduped
 
-        # Remove community cards that duplicate hero cards
         if hero_cards and community_cards:
             hero_set = set(hero_cards)
             community_cards = [c for c in community_cards if c not in hero_set]
 
-        # 2. Detect new hand and ensure a hand exists
-        #
-        # New hand signals:
-        #   a) Hero cards changed (we see 2 new distinct cards)
-        #   b) Board disappeared (community went from cards to empty)
-        #      + no hero cards visible (between hands)
-        #
+        # 2. Detect new hand via screen (hero cards changed)
         new_hand_detected = False
 
         if not self.game_state.current_hand:
-            if hero_cards or reading.players or pot > 0:
-                self._create_hand_from_reading(reading)
+            if hero_cards or pot > 0:
+                self._create_hand_from_hh_or_fallback(reading)
         else:
             # Signal (a): hero cards changed
             if (len(reading.hero_cards) == 2
@@ -281,34 +450,39 @@ class PokerAssistant:
                 if old_cards and set(old_cards) != set(reading.hero_cards):
                     new_hand_detected = True
 
-            # Signal (b): board disappeared — community was non-empty,
-            # now empty, and no hero cards visible (= between hands)
+            # Signal (b): board disappeared + no hero cards
             if (self._last_community_cards
                     and not reading.community_cards
                     and len(reading.hero_cards) != 2):
                 self._no_cards_frames += 1
-                # Require 3 consecutive empty frames to avoid OCR flicker
                 if self._no_cards_frames >= 3:
                     new_hand_detected = True
             else:
                 self._no_cards_frames = 0
 
+            # Signal (c): new hero cards + no board + previous had board
+            if (not new_hand_detected
+                    and len(reading.hero_cards) == 2
+                    and reading.hero_cards[0] != reading.hero_cards[1]
+                    and not reading.community_cards
+                    and self._last_community_cards):
+                new_hand_detected = True
+
             if new_hand_detected:
-                # Record opponent stats from the completed hand
-                self._record_completed_hand()
                 # Reset sticky state
                 self._last_hero_cards = reading.hero_cards if len(reading.hero_cards) == 2 else []
                 self._last_community_cards = []
                 self._last_pot = 0.0
+                self._last_pot_at_street_start = 0.0
+                self._last_street = "preflop"
                 self._no_cards_frames = 0
                 hero_cards = self._last_hero_cards
                 community_cards = []
                 pot = 0.0
                 if len(reading.hero_cards) == 2:
-                    self._create_hand_from_reading(reading)
+                    self._create_hand_from_hh_or_fallback(reading)
 
         # Update sticky cache AFTER new-hand detection
-        # (so detection can compare against previous hand's state)
         if (len(reading.hero_cards) == 2
                 and reading.hero_cards[0] != reading.hero_cards[1]):
             self._last_hero_cards = reading.hero_cards
@@ -317,12 +491,17 @@ class PokerAssistant:
         if reading.pot > 0:
             self._last_pot = reading.pot
 
+        # Community cards can only increase during a hand (3->4->5)
+        if (community_cards
+                and self._last_community_cards
+                and not new_hand_detected
+                and len(community_cards) < len(self._last_community_cards)):
+            community_cards = self._last_community_cards
+
         if community_cards:
             self.game_state.update_community_cards(community_cards)
-
         if pot > 0:
             self.game_state.update_pot(pot)
-
         if hero_cards:
             self.game_state.set_hero_cards(hero_cards)
 
@@ -407,95 +586,51 @@ class PokerAssistant:
 
         return ui_state
 
-    def _record_completed_hand(self):
-        """Record stats for all villains when a hand completes.
+    def _create_hand_from_hh_or_fallback(self, reading):
+        """Create a new hand using HH data if available, otherwise minimal fallback.
 
-        Called just before creating a new hand, using the current hand's
-        action history to update opponent profiles.
-        """
-        hand = self.game_state.current_hand
-        if not hand or not hand.actions:
-            return
-
-        hero = hand.get_hero()
-        if not hero:
-            return
-
-        for player in hand.players:
-            if player.is_hero:
-                continue
-            if not player.name or player.name.startswith("Player_"):
-                continue  # Skip unnamed/fallback players
-
-            # Collect this player's actions as dicts (format record_hand expects)
-            player_actions = [
-                {
-                    "action": a.action_type.value,
-                    "street": a.street.value,
-                    "amount": a.amount,
-                }
-                for a in hand.actions
-                if a.player_name == player.name
-            ]
-
-            if not player_actions:
-                continue  # Player had no actions, skip
-
-            # Determine if preflop raiser
-            was_pfr = any(
-                a["action"] in ("raise", "all_in")
-                for a in player_actions
-                if a["street"] == "preflop"
-            )
-
-            # We can't reliably detect showdown from vision alone,
-            # so assume went_to_showdown if player was still active at river
-            went_to_sd = (player.is_active
-                          and hand.street in (Street.RIVER, Street.SHOWDOWN))
-
-            self.opponent_db.record_hand(
-                player_name=player.name,
-                actions=player_actions,
-                went_to_showdown=went_to_sd,
-                won_at_showdown=False,  # Can't determine winner from vision
-                was_preflop_raiser=was_pfr,
-            )
-
-    def _create_hand_from_reading(self, reading):
-        """Create a new hand from vision data.
-
-        Identifies hero by matching against the hero card region seat
-        (typically seat 0 in calibrated regions, but falls back to
-        the player with the lowest seat index if unclear).
+        HH data provides accurate players, seats, stacks, and positions.
+        If no HH data exists yet, creates a minimal hand with just hero.
         """
         players = []
-        hero_seat = self.config.hero_seat  # Default hero seat from config
+        dealer_seat = 0
+        sb = self.config.default_sb
+        bb = self.config.default_bb
 
-        for i, p in enumerate(reading.players):
-            seat = p.get("seat", i)
-            player = Player(
-                name=p.get("name", f"Player_{seat}"),
-                seat=seat,
-                stack=p.get("stack", 0),
-                is_hero=(seat == hero_seat),
-            )
-            players.append(player)
+        # Try to use latest HH hand for player info
+        with self._hh_lock:
+            hh = self._latest_hh_hand
 
-        # If no player was marked as hero, find by seat or create fallback
+        if hh and hh.players:
+            hero_name = self.config.hero_name or hh.hero_name
+            for hp in hh.players:
+                p = Player(
+                    name=hp.name,
+                    seat=hp.seat,
+                    stack=hp.stack,
+                    is_hero=(hp.name == hero_name),
+                )
+                players.append(p)
+            dealer_seat = hh.dealer_seat
+            sb = hh.small_blind
+            bb = hh.big_blind
+        else:
+            # Fallback: minimal hand with just hero
+            hero_seat = self.config.hero_seat
+            hero_name = self.config.hero_name or "Hero"
+            players = [Player(name=hero_name, seat=hero_seat,
+                              stack=100, is_hero=True)]
+
         if not any(p.is_hero for p in players):
             if players:
-                # Mark the player closest to hero_seat as hero
-                players.sort(key=lambda p: abs(p.seat - hero_seat))
                 players[0].is_hero = True
-            else:
-                players = [Player(name="Hero", seat=hero_seat, stack=100, is_hero=True)]
 
         self.game_state.new_hand(
             hand_number=self.game_state.hands_played + 1,
             players=players,
-            dealer_seat=reading.dealer_seat if reading.dealer_seat >= 0 else 0,
-            small_blind=self.config.default_sb,
-            big_blind=self.config.default_bb,
+            dealer_seat=dealer_seat,
+            small_blind=sb,
+            big_blind=bb,
         )
 
     def run_demo(self):
@@ -643,6 +778,8 @@ class PokerAssistant:
 
     def shutdown(self):
         """Clean up resources."""
+        if self.hh_monitor:
+            self.hh_monitor.stop()
         if self.capture:
             self.capture.release()
         self.opponent_db.close()
@@ -891,9 +1028,10 @@ def _run_live(assistant: PokerAssistant, config: Config):
     print("  POKER AI ASSISTANT — LIVE")
     print("=" * 50)
 
-    # Setup capture and vision
+    # Setup capture, vision, and hand history
     assistant.setup_capture()
     assistant.setup_vision()
+    assistant.setup_hand_history()
 
     # Check LLM availability
     if config.llm_enabled:

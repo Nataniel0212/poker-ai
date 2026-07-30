@@ -31,6 +31,11 @@ class Config:
     # === UI ===
     ui_mode: str = "window"  # "window" or "console"
 
+    # === HAND HISTORY ===
+    hh_dir: str = ""  # Path to PokerStars HandHistory folder (auto-detected if empty)
+    hh_poll_interval: float = 2.0  # Seconds between checking for new HH files
+    hero_name: str = ""  # Hero's PokerStars username (auto-detected from HH)
+
     # === DATABASE ===
     opponent_db_path: str = "profiles/opponents.db"
 

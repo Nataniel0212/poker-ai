@@ -44,7 +44,7 @@ def capture_window():
         print("PokerStars not found!")
         return None, None
 
-    title, wx, wy, ww, wh = ps
+    title, wx, wy, ww, wh, _hwnd = ps
     wx, wy = max(0, wx), max(0, wy)
     print(f"Found: {title}")
     print(f"  Window: {ww}x{wh} at ({wx},{wy})")
@@ -183,7 +183,7 @@ def main():
 
         # Template scores — show top 5 matches
         if hasattr(reader, '_corner_cache') and reader._corner_cache:
-            roi_corner = roi[0:int(rh * 0.45), 0:int(rw * 0.45)]
+            roi_corner = cv2.cvtColor(roi[0:int(rh * 0.45), 0:int(rw * 0.45)], cv2.COLOR_BGR2GRAY)
             scores = []
             for card_name, corner_tmpl in reader._corner_cache.items():
                 ch, cw = corner_tmpl.shape[:2]

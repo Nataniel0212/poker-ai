@@ -277,7 +277,11 @@ class OpponentDatabase:
         self._cache[profile.name] = profile
 
     def record_hand(self, player_name: str, actions: list, went_to_showdown: bool,
-                    won_at_showdown: bool, was_preflop_raiser: bool):
+                    won_at_showdown: bool, was_preflop_raiser: bool,
+                    faced_3bet: bool = False, folded_to_3bet: bool = False,
+                    could_3bet: bool = False, did_3bet: bool = False,
+                    could_cbet: bool = False, did_cbet: bool = False,
+                    faced_cbet: bool = False, folded_to_cbet: bool = False):
         """Record a completed hand for a player and update their stats."""
         profile = self.get_profile(player_name)
         profile.hands_played += 1
@@ -300,6 +304,26 @@ class OpponentDatabase:
                 profile._total_bets_raises += 1
             elif a["action"] == "call":
                 profile._total_calls += 1
+
+        # 3-bet tracking
+        if could_3bet:
+            profile._times_could_3bet += 1
+            if did_3bet:
+                profile._times_did_3bet += 1
+        if faced_3bet:
+            profile._times_faced_3bet += 1
+            if folded_to_3bet:
+                profile._times_folded_to_3bet += 1
+
+        # C-bet tracking
+        if could_cbet:
+            profile._times_could_cbet += 1
+            if did_cbet:
+                profile._times_did_cbet += 1
+        if faced_cbet:
+            profile._times_faced_cbet += 1
+            if folded_to_cbet:
+                profile._times_folded_to_cbet += 1
 
         # Showdown
         if went_to_showdown:
