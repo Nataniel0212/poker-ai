@@ -181,6 +181,12 @@ def run_overlay(profile: Profile, opponents: Optional[int] = None,
     window.resize(390, 460)
     window.setStyleSheet("background:#16181c; color:#e8e8e8;")
 
+    # Stall fonstret UTANFOR lasregionen — hamnar det over bordet laser
+    # skarmlasaren fonstrets egna pixlar istallet for korten.
+    if profile.region is not None:
+        rx, ry = profile.region[0], profile.region[1]
+        window.move(max(0, rx - 390 - 12), max(0, ry))
+
     layout = QVBoxLayout(window)
     layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(8)
