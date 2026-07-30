@@ -163,8 +163,10 @@ def pair_marks(marks: List[Mark]) -> List[Tuple[Mark, Mark]]:
     used = set()
     pairs: List[Tuple[Mark, Mark]] = []
 
-    # Rankkandidater: inte extremt breda eller smala
-    ranks = [m for m in marks if 0.22 <= m.aspect <= 1.45]
+    # Rankkandidater: inte extremt breda eller smala. Overgransen maste
+    # rymma tvasiffriga '10' — den glyfen ar klart bredare an alla andra
+    # (16x11 px i 247-spelet ger aspekt 1.45+).
+    ranks = [m for m in marks if 0.22 <= m.aspect <= 1.85]
     ranks.sort(key=lambda m: (m.y, m.x))
 
     for rank in ranks:
