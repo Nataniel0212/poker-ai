@@ -98,7 +98,7 @@ class TemplateStore:
     att spara bada an att snitta ihop dem till en suddig mall.
     """
 
-    MAX_VARIANTS = 6
+    MAX_VARIANTS = 12
 
     def __init__(self):
         self.ranks: Dict[str, List[np.ndarray]] = {}
