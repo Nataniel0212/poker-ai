@@ -5,23 +5,28 @@
 - PokerStars spelar händer (hand #259798948658 etc syns i loggen)
 - Men HH-filer skrivs INTE till disk — inställningen saknas
 
-## Vad som behövs
-Hitta och aktivera "Save My Hand History" i PokerStars.SE-klienten.
+## Officiell väg i menyn (bekräftad via PokerStars support)
+**Inställningar → Spelhistorik → Handhistorik** (eng: Settings → Game History → Hand History)
+Bocka i **"Spara min handhistorik"** och välj mapp.
 
-## Möjliga platser i menyn
-PokerStars.SE använder Locale=13 (svenska). Prova:
+Obs: menyn heter "Game History"/"Spelhistorik", inte "Playing History" som äldre
+guider säger.
 
-1. **Kugghjulet (⚙️)** → "Inställningar" / "Alternativ" / "Options"
-   - Leta efter: "Spelhistorik" / "Handhistorik" / "Playing History" / "Hand History"
-   - Bocka i: "Spara mina händer" / "Save My Hand History"
+## Officiell felsökning om inställningen inte sparas
+Källa: https://www.pokerstars.se/help/articles/win-hh-not-saving-initial/
 
-2. **Högerklicka på bordet** → "Handhistorik" / "Hand History"
+1. **Verifiera** att "Spara min handhistorik" faktiskt är ibockad
+2. **Byt lagringsmapp till Dokument** — skrivskyddade mappar (Program Files)
+   blockerar tyst
+3. **Trasig user.ini**: Inställningar → Hjälp → "Öppna min inställningsmapp",
+   döp om `user.ini` till `user.old`, starta om klienten, aktivera igen.
+   (Detta nollställer övriga klientinställningar — ta backup först.)
+4. **Stäng tredjepartsprogram** (HM/PT etc) som kan störa
 
-3. **Menyrad** (om den finns) → "Alternativ" → "Handhistorik"
-
-4. **Settings → Global** — ibland finns det under en "Global" eller "General" flik
-
-5. **Instant Hand History-fönstret** — om du öppnar det kan det finnas en "Save" knapp
+## Verifiera att inställningen fastnade
+`[LocalHH]`-sektionen i user.ini innehåller en binär `state=`-blob.
+Baseline (AV, 2026-07-30): `state=0100000000000000000000000002000000020000`
+Om blobben ändrats efter att klienten stängts har inställningen sparats.
 
 ## Mapp att välja
 ```
