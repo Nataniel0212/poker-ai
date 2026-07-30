@@ -117,16 +117,18 @@ class Match:
 
     @property
     def trusted(self) -> bool:
-        # Bada matten maste peka pa samma etikett. Toleransmattet ar bra pa
-        # att kanna igen samma glyf i ny rendering men slapper ibland fram
-        # en lookalike (lutande 8 mot 9); strikta Jaccard rangordnar da ratt
-        # aven nar dess poang ar lag. Kravet kan bara doda fellasningar.
-        if not self.agree:
-            return False
-        # En nast intill exakt traff ar en inlard glyf och far inte vetoas
-        # av att ett annat marke rakar likna den.
+        # En nast intill exakt traff ar en inlard glyf och ar sitt eget
+        # bevis — den far aldrig vetoas, varken av marginal eller av det
+        # strikta mattet. (Skiljedomarkravet pa exakta traffar visade sig
+        # doda korrekta lasningar: J och 3 vetoades trots 1.00-traffar.)
         if self.score >= 0.97:
             return True
+        # I mellanskiktet 0.90-0.97 lever lookalikes (lutande 8 mot 9).
+        # Dar maste toleransmattet och strikta Jaccard peka pa samma
+        # etikett, och marginalen halla. Kravet kan bara doda fellasningar
+        # i just det osakra skiktet.
+        if not self.agree:
+            return False
         return self.score >= MIN_SCORE and self.margin >= MIN_MARGIN
 
 
@@ -138,7 +140,7 @@ class TemplateStore:
     att spara bada an att snitta ihop dem till en suddig mall.
     """
 
-    MAX_VARIANTS = 12
+    MAX_VARIANTS = 24
 
     def __init__(self):
         self.ranks: Dict[str, List[np.ndarray]] = {}
@@ -157,9 +159,13 @@ class TemplateStore:
         if glyph is None:
             return
         variants = bucket.setdefault(label, [])
-        # Spara inte en variant vi i praktiken redan har
+        # Spara inte en variant vi i praktiken redan har. Gransen maste
+        # ligga OVER exakthetsundantaget (0.97): en variant pa 0.93-0.97
+        # ar bade for lik for att sparas och for olik for att litas pa —
+        # det dodlaget gjorde att samma kort kunde vagra lasas tva bilder
+        # i rad trots farsk inlarning.
         for existing in variants:
-            if similarity(existing, glyph) > 0.93:
+            if similarity(existing, glyph) >= 0.98:
                 return
         variants.append(glyph)
         if len(variants) > self.MAX_VARIANTS:
