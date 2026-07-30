@@ -94,12 +94,22 @@ def similarity(a: np.ndarray, b: np.ndarray) -> float:
     return min(fa, fb)
 
 
+def jaccard(a: np.ndarray, b: np.ndarray) -> float:
+    """Strikt pixeloverlapp — anvands som skiljedomare, inte som huvudmatt."""
+    if a is None or b is None:
+        return 0.0
+    inter = np.count_nonzero(a & b)
+    union = np.count_nonzero(a | b)
+    return inter / union if union else 0.0
+
+
 @dataclass
 class Match:
     label: str
     score: float
     runner_up: Optional[str] = None
     runner_up_score: float = 0.0
+    agree: bool = True   # toleransmattets och Jaccards toppetikett ar samma
 
     @property
     def margin(self) -> float:
@@ -107,9 +117,14 @@ class Match:
 
     @property
     def trusted(self) -> bool:
+        # Bada matten maste peka pa samma etikett. Toleransmattet ar bra pa
+        # att kanna igen samma glyf i ny rendering men slapper ibland fram
+        # en lookalike (lutande 8 mot 9); strikta Jaccard rangordnar da ratt
+        # aven nar dess poang ar lag. Kravet kan bara doda fellasningar.
+        if not self.agree:
+            return False
         # En nast intill exakt traff ar en inlard glyf och far inte vetoas
-        # av att ett annat marke rakar likna den. Med toleransmattet ligger
-        # aven lookalikes hogre, sa gransen ar stramare an forr.
+        # av att ett annat marke rakar likna den.
         if self.score >= 0.97:
             return True
         return self.score >= MIN_SCORE and self.margin >= MIN_MARGIN
@@ -185,18 +200,23 @@ class TemplateStore:
         if glyph is None or not bucket:
             return None
         scores: List[Tuple[str, float]] = []
+        jac: List[Tuple[str, float]] = []
         for label, variants in bucket.items():
             if allowed is not None and label not in allowed:
                 continue
             best = max(similarity(v, glyph) for v in variants)
             scores.append((label, best))
+            jac.append((label, max(jaccard(v, glyph) for v in variants)))
         if not scores:
             return None
         scores.sort(key=lambda t: -t[1])
         top_label, top_score = scores[0]
+        jac_top = max(jac, key=lambda t: t[1])[0]
+        agree = top_label == jac_top
         if len(scores) > 1:
-            return Match(top_label, top_score, scores[1][0], scores[1][1])
-        return Match(top_label, top_score)
+            return Match(top_label, top_score, scores[1][0], scores[1][1],
+                         agree=agree)
+        return Match(top_label, top_score, agree=agree)
 
     # ---------- lagring ----------
 
