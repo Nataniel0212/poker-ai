@@ -20,7 +20,9 @@ import cv2
 import numpy as np
 
 GLYPH_SIZE = 28          # normaliserad glyfstorlek i pixlar
-MIN_SCORE = 0.62         # under detta ar matchningen inte trovardig
+MIN_SCORE = 0.80         # under detta ar matchningen inte trovardig.
+                         # Korrekta traffar mot mallar fran samma skala ligger
+                         # pa 0.94-1.00; observerade fellasningar lag 0.64-0.84.
 MIN_MARGIN = 0.06        # tvaan maste vara sa mycket samre an ettan
 
 RANKS = "23456789TJQKA"
