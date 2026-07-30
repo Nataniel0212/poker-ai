@@ -196,13 +196,21 @@ def read_table(
     if hero_zone is not None and identified:
         median_h = float(np.median([c.rank_mark.h for c in identified]))
         median_face = float(np.median([c.rank_mark.face_area for c in identified]))
-        identified_faces = {c.rank_mark.face_area for c in identified}
         board_ys = [c.y for c in board_cards]
         hx, hy, hw, hh = hero_zone
 
         relevant = 0
         for cand in rejected:
-            if cand.rank_mark.face_area in identified_faces:
+            # Dekor (kortens mittsymboler) sitter *under* ett last hornindex
+            # pa samma ljusyta. Ett olast hornindex i samma hojd som de lasta
+            # ar daremot ett riktigt kort — intilliggande bordskort smalter
+            # ofta ihop till en enda yta i masken, sa ytan ensam racker inte.
+            decoration = any(
+                c.rank_mark.face_area == cand.rank_mark.face_area
+                and c.y < cand.y - median_h
+                for c in identified
+            )
+            if decoration:
                 continue
             on_card = cand.rank_mark.face_area >= median_face * 0.5
             similar = 0.6 <= (cand.rank_mark.h / median_h) <= 1.5
