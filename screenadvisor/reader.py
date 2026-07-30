@@ -189,6 +189,31 @@ def read_table(
     result.hero = [c.label for c in hero_cards]
     result.board = [c.label for c in board_cards]
 
+    # Med en hjaltezon vet vi var olasta kort *kan* paverka radet: i zonen
+    # eller pa bordsraden. Ett kortlikt fynd nagon annanstans (chipshogar
+    # intill motstandarnas ljusa namnskyltar, deras uppvisade kort vid
+    # showdown) andrar inte radet och far inte blockera det.
+    if hero_zone is not None and identified:
+        median_h = float(np.median([c.rank_mark.h for c in identified]))
+        median_face = float(np.median([c.rank_mark.face_area for c in identified]))
+        identified_faces = {c.rank_mark.face_area for c in identified}
+        board_ys = [c.y for c in board_cards]
+        hx, hy, hw, hh = hero_zone
+
+        relevant = 0
+        for cand in rejected:
+            if cand.rank_mark.face_area in identified_faces:
+                continue
+            on_card = cand.rank_mark.face_area >= median_face * 0.5
+            similar = 0.6 <= (cand.rank_mark.h / median_h) <= 1.5
+            if not (on_card and similar):
+                continue
+            in_zone = hx <= cand.x <= hx + hw and hy <= cand.y <= hy + hh
+            on_board_row = any(abs(cand.y - by) <= median_h * 2.2 for by in board_ys)
+            if in_zone or on_board_row:
+                relevant += 1
+        result.unknown_cards = relevant
+
     if len(board_cards) > 5:
         result.note = "Fler an fem bordskort — troligen showdown"
         result.board = []
