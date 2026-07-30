@@ -134,6 +134,36 @@ def read_table(
     hero_zone: Optional[Tuple[int, int, int, int]] = None,
     opponents_override: Optional[int] = None,
 ) -> TableRead:
+    """Las bordet, med automatisk skalanpassning.
+
+    Spelens canvas ritas om i ny storlek nar fonstret eller sidlayouten
+    andras, och nagra procents skillnad racker for att mallpoangen ska
+    sjunka under troskeln. Istallet for att krava omkalibrering vid varje
+    skalandring provas nagra narliggande skalor nar forsta laspasset ger
+    lite — och det pass som identifierar flest kort vinner.
+    """
+    def strength(read: TableRead) -> int:
+        return sum(1 for c in read.candidates if c.identified)
+
+    best = _read_frame(bgr, store, hero_zone, opponents_override)
+    if strength(best) >= 2:
+        return best
+    for s in (0.85, 0.9, 0.95, 1.05, 1.1, 1.15):
+        interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
+        scaled = cv2.resize(bgr, None, fx=s, fy=s, interpolation=interp)
+        hz = tuple(int(round(v * s)) for v in hero_zone) if hero_zone else None
+        attempt = _read_frame(scaled, store, hz, opponents_override)
+        if strength(attempt) > strength(best):
+            best = attempt
+    return best
+
+
+def _read_frame(
+    bgr: np.ndarray,
+    store: TemplateStore,
+    hero_zone: Optional[Tuple[int, int, int, int]] = None,
+    opponents_override: Optional[int] = None,
+) -> TableRead:
     """Las hjaltekort, bordskort och antal motstandare ur en bildruta."""
     cands = classify(find_card_candidates(bgr), store)
     identified = [c for c in cands if c.identified]
@@ -213,7 +243,10 @@ def read_table(
             if decoration:
                 continue
             on_card = cand.rank_mark.face_area >= median_face * 0.5
-            similar = 0.6 <= (cand.rank_mark.h / median_h) <= 1.5
+            # Stramare an i grundfiltret: ett riktigt olast hornindex ar i
+            # praktiken lika stort som de lasta. Kortens mittsymboler i en
+            # lutande solfjader kan hamna i hornhojd men ar tydligt storre.
+            similar = 0.7 <= (cand.rank_mark.h / median_h) <= 1.35
             if not (on_card and similar):
                 continue
             in_zone = hx <= cand.x <= hx + hw and hy <= cand.y <= hy + hh
