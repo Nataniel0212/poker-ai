@@ -176,6 +176,14 @@ def read_table(
 
     hero_ids = {id(c) for c in hero_cards}
     board_cards = [c for c in identified if id(c) not in hero_ids]
+    if hero_zone is not None:
+        # Ett kort inne i hjaltezonen ar aldrig ett bordskort. Utan den har
+        # sparren blev ett ensamt last hjaltekort presenterat som bord.
+        hx, hy, hw, hh = hero_zone
+        board_cards = [
+            c for c in board_cards
+            if not (hx <= c.x <= hx + hw and hy <= c.y <= hy + hh)
+        ]
     board_cards.sort(key=lambda c: c.x)
 
     result.hero = [c.label for c in hero_cards]
