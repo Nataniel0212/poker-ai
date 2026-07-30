@@ -54,6 +54,31 @@ class TableRead:
         return self.hero + self.board
 
 
+def _back_mask(bgr: np.ndarray) -> np.ndarray:
+    """Mask over kortryggarnas starkt mattade bla ytor."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    backs = (sat > 120) & (val > 70) & (hue > 85) & (hue < 140)
+    return cv2.morphologyEx(backs.astype(np.uint8), cv2.MORPH_CLOSE,
+                            np.ones((5, 5), np.uint8))
+
+
+def count_live_opponents(bgr: np.ndarray, seat_zones) -> int:
+    """Rakna motstandare som fortfarande har kortryggar pa sitt sate.
+
+    Palitligare an att rakna blobbar i hela bilden: chipshogar och annat
+    blatt utanfor satena kan inte storas in, och en foldad spelare (vars
+    ryggar forsvinner fran satet) syns direkt.
+    """
+    mask = _back_mask(bgr)
+    live = 0
+    for zx, zy, zw, zh in seat_zones:
+        zone = mask[max(0, zy):zy + zh, max(0, zx):zx + zw]
+        if int(np.count_nonzero(zone)) >= 800:
+            live += 1
+    return live
+
+
 def count_card_backs(bgr: np.ndarray) -> int:
     """Uppskatta antalet motstandare genom att rakna kortryggar.
 
@@ -139,6 +164,7 @@ def read_table(
     store: TemplateStore,
     hero_zone: Optional[Tuple[int, int, int, int]] = None,
     opponents_override: Optional[int] = None,
+    seat_zones=None,
 ) -> TableRead:
     """Las bordet, med automatisk skalanpassning.
 
@@ -151,14 +177,16 @@ def read_table(
     def strength(read: TableRead) -> int:
         return sum(1 for c in read.candidates if c.identified)
 
-    best = _read_frame(bgr, store, hero_zone, opponents_override)
+    best = _read_frame(bgr, store, hero_zone, opponents_override, seat_zones)
     if strength(best) >= 2:
         return best
     for s in (0.85, 0.9, 0.95, 1.05, 1.1, 1.15):
         interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
         scaled = cv2.resize(bgr, None, fx=s, fy=s, interpolation=interp)
         hz = tuple(int(round(v * s)) for v in hero_zone) if hero_zone else None
-        attempt = _read_frame(scaled, store, hz, opponents_override)
+        sz = ([tuple(int(round(v * s)) for v in z) for z in seat_zones]
+              if seat_zones else None)
+        attempt = _read_frame(scaled, store, hz, opponents_override, sz)
         if strength(attempt) > strength(best):
             best = attempt
     return best
@@ -169,6 +197,7 @@ def _read_frame(
     store: TemplateStore,
     hero_zone: Optional[Tuple[int, int, int, int]] = None,
     opponents_override: Optional[int] = None,
+    seat_zones=None,
 ) -> TableRead:
     """Las hjaltekort, bordskort och antal motstandare ur en bildruta."""
     cands = classify(find_card_candidates(bgr), store)
@@ -273,6 +302,8 @@ def _read_frame(
     # Detektionen far vara ett forslag; anvandaren har sista ordet.
     if opponents_override is not None:
         result.opponents = max(1, opponents_override)
+    elif seat_zones:
+        result.opponents = max(1, count_live_opponents(bgr, seat_zones))
     else:
         result.opponents = max(1, count_card_backs(bgr))
 

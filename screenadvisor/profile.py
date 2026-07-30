@@ -30,6 +30,7 @@ class Profile:
     name: str = "standard"
     region: Optional[Tuple[int, int, int, int]] = None      # x, y, w, h pa skarmen
     hero_zone: Optional[Tuple[int, int, int, int]] = None   # relativt region
+    seat_zones: Optional[List[Tuple[int, int, int, int]]] = None  # motstandarnas satesrutor
     table_size: int = 5
     templates: TemplateStore = field(default_factory=TemplateStore)
 
@@ -53,6 +54,8 @@ class Profile:
             "name": self.name,
             "region": list(self.region) if self.region else None,
             "hero_zone": list(self.hero_zone) if self.hero_zone else None,
+            "seat_zones": ([list(z) for z in self.seat_zones]
+                           if self.seat_zones else None),
             "table_size": self.table_size,
             "templates": self.templates.to_dict(),
         }
@@ -74,8 +77,10 @@ class Profile:
         profile = cls(name=data.get("name", name))
         region = data.get("region")
         hero = data.get("hero_zone")
+        seats = data.get("seat_zones")
         profile.region = tuple(region) if region else None
         profile.hero_zone = tuple(hero) if hero else None
+        profile.seat_zones = [tuple(z) for z in seats] if seats else None
         profile.table_size = int(data.get("table_size", 5))
         profile.templates = TemplateStore.from_dict(data.get("templates") or {})
         return profile

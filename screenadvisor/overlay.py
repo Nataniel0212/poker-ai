@@ -37,7 +37,9 @@ class AdvisorWorker(threading.Thread):
         self.profile = profile
         self.interval = interval
         self.sims = sims
-        self._opponents = opponents or profile.default_opponents
+        # None = automatiskt lage: rakna kortryggar pa satena varje bildruta.
+        # Ett tal = manuellt lage (satt via --opponents eller +/--knapparna).
+        self._opponents: Optional[int] = opponents
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._snapshot = Snapshot()
@@ -47,14 +49,29 @@ class AdvisorWorker(threading.Thread):
     # ---------- gransssnitt mot UI ----------
 
     @property
+    def is_auto(self) -> bool:
+        with self._lock:
+            return self._opponents is None
+
+    @property
     def opponents(self) -> int:
         with self._lock:
-            return self._opponents
+            if self._opponents is not None:
+                return self._opponents
+            read = self._snapshot.read
+            if read is not None and read.opponents:
+                return read.opponents
+            return self.profile.default_opponents
 
     def set_opponents(self, value: int) -> None:
         with self._lock:
             self._opponents = max(1, min(9, value))
             self._cache_key = None      # tvinga omrakning
+
+    def set_auto(self) -> None:
+        with self._lock:
+            self._opponents = None
+            self._cache_key = None
 
     def latest(self) -> Snapshot:
         with self._lock:
@@ -88,14 +105,17 @@ class AdvisorWorker(threading.Thread):
                     self._cache_key = None
 
                 frame = capture.grab(self.profile.region)
-                opponents = self.opponents
+                with self._lock:
+                    manual = self._opponents
                 read = read_table(
                     frame,
                     self.profile.templates,
                     hero_zone=self.profile.hero_zone,
-                    opponents_override=opponents,
+                    opponents_override=manual,
+                    seat_zones=self.profile.seat_zones,
                 )
                 snapshot.read = read
+                opponents = read.opponents or self.profile.default_opponents
 
                 if read.usable:
                     # Rakna bara om nar situationen faktiskt andrats — equity
@@ -212,15 +232,19 @@ def run_overlay(profile: Profile, opponents: Optional[int] = None,
     opp_label = QLabel()
     minus = QPushButton("−")
     plus = QPushButton("+")
-    for button in (minus, plus):
-        button.setFixedWidth(34)
+    auto = QPushButton("Auto")
+    for button in (minus, plus, auto):
         button.setStyleSheet("background:#2a2e36; border:none; padding:5px;"
                             "font-size:15px; color:#e8e8e8;")
+    minus.setFixedWidth(34)
+    plus.setFixedWidth(34)
+    auto.setFixedWidth(52)
     controls.addWidget(QLabel("Motståndare kvar i handen:"))
     controls.addWidget(opp_label)
     controls.addStretch(1)
     controls.addWidget(minus)
     controls.addWidget(plus)
+    controls.addWidget(auto)
     layout.addLayout(controls)
 
     status = QLabel()
@@ -229,11 +253,13 @@ def run_overlay(profile: Profile, opponents: Optional[int] = None,
 
     minus.clicked.connect(lambda: worker.set_opponents(worker.opponents - 1))
     plus.clicked.connect(lambda: worker.set_opponents(worker.opponents + 1))
+    auto.clicked.connect(worker.set_auto)
 
     def tick():
         snapshot = worker.latest()
         opp = worker.opponents
-        opp_label.setText(f"<b>{opp}</b>")
+        mode = "auto" if worker.is_auto else "manuell"
+        opp_label.setText(f"<b>{opp}</b> <span style='color:#6d7280'>({mode})</span>")
 
         if snapshot.error:
             headline.setText("Fel vid läsning")

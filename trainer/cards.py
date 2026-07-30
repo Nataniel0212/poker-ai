@@ -17,17 +17,21 @@ FULL_DECK: List[str] = [r + s for r in RANKS for s in SUITS]
 SUIT_SYMBOL = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
 RED_SUITS = ("h", "d")
 
-# Rank-namn for laslig utskrift av handstyrka
+# Rank-namn for laslig utskrift av handstyrka.
+# phevaluators 7462-skala: 1 = royal flush, 7462 = samsta hogt kort.
+# Granserna ar kategoriernas SISTA varde — 11-166 ar fyrtal, 167-322 kak,
+# 323-1599 flush, 1600-1609 stege, 1610-2467 triss, 2468-3325 tva par,
+# 3326-6185 ett par, 6186-7462 hogt kort.
 _HAND_CLASS_LIMITS = [
-    (10, "Royal flush"),
-    (166, "Straight flush"),
-    (322, "Fyrtal"),
-    (1599, "Kak"),
-    (1609, "Flush"),
-    (2467, "Stege"),
-    (3325, "Triss"),
-    (6185, "Tva par"),
-    (6678, "Ett par"),
+    (1, "Royal flush"),
+    (10, "Straight flush"),
+    (166, "Fyrtal"),
+    (322, "Kak"),
+    (1599, "Flush"),
+    (1609, "Stege"),
+    (2467, "Triss"),
+    (3325, "Tva par"),
+    (6185, "Ett par"),
     (7462, "Hogt kort"),
 ]
 
