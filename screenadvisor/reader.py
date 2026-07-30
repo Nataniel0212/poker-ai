@@ -95,8 +95,15 @@ def count_genuine_unknowns(
     median_h = float(np.median([c.rank_mark.h for c in identified]))
     median_face = float(np.median([c.rank_mark.face_area for c in identified]))
 
+    # Ytor dar vi redan last ett hornindex. En forkastad kandidat pa samma
+    # kortyta ar kortets egen dekor (mittsymboler), inte ett olast kort —
+    # annars larmar varje lasning av en solfjader med stora pips i onodan.
+    identified_faces = {c.rank_mark.face_area for c in identified}
+
     unknowns = 0
     for cand in rejected:
+        if cand.rank_mark.face_area in identified_faces:
+            continue
         on_card = cand.rank_mark.face_area >= median_face * 0.5
         similar_size = 0.6 <= (cand.rank_mark.h / median_h) <= 1.5
         if on_card and similar_size:
