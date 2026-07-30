@@ -27,8 +27,14 @@ class TableRead:
 
     @property
     def usable(self) -> bool:
-        """Kan vi ge rad? Kraver tva hjaltekort och inga oklara kort."""
-        return len(self.hero) == 2 and self.unknown_cards == 0
+        """Kan vi ge rad? Kraver tva hjaltekort, inga oklara kort och en
+        mojlig street. Ett eller tva bordskort finns inte i hold'em — da har
+        lasningen missat kort som inte ens hittades som kandidater, och ett
+        rad pa halva bradan ar varre an inget rad.
+        """
+        return (len(self.hero) == 2
+                and self.unknown_cards == 0
+                and len(self.board) in (0, 3, 4, 5))
 
     @property
     def street(self) -> str:
