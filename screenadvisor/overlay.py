@@ -66,10 +66,27 @@ class AdvisorWorker(threading.Thread):
     # ---------- arbetslopet ----------
 
     def run(self) -> None:
+        import os
+        try:
+            profile_mtime = os.path.getmtime(self.profile.path)
+        except OSError:
+            profile_mtime = 0.0
+
         while not self._stop.is_set():
             start = time.time()
             snapshot = Snapshot()
             try:
+                # Ladda om profilen nar den andrats pa disk — da slar nya
+                # inlarda glyfer igenom direkt utan att fonstret startas om.
+                try:
+                    mtime = os.path.getmtime(self.profile.path)
+                except OSError:
+                    mtime = profile_mtime
+                if mtime != profile_mtime:
+                    profile_mtime = mtime
+                    self.profile = Profile.load(self.profile.name)
+                    self._cache_key = None
+
                 frame = capture.grab(self.profile.region)
                 opponents = self.opponents
                 read = read_table(
