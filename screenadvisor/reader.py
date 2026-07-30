@@ -159,9 +159,13 @@ def read_table(
         ]
         hero_cards.sort(key=lambda c: c.x)
     if len(hero_cards) != 2:
-        # Fallback pa geometri: hjaltens kort ligger langst ner
+        # Fallback pa geometri: hjaltens kort ligger langst ner — men bara om
+        # raden faktiskt ligger i nedre delen av bilden. Annars ar det bordet
+        # vi rakat lasa (t.ex. nar hjaltens egna kort inte kunde lasas), och
+        # att kalla bordskort for hjaltekort ger sjalvsakra rad pa fel hand.
         bottom_row = max(rows, key=lambda r: r[0].y)
-        hero_cards = bottom_row if len(bottom_row) == 2 else []
+        in_lower_half = bottom_row[0].y > bgr.shape[0] * 0.45
+        hero_cards = bottom_row if (len(bottom_row) == 2 and in_lower_half) else []
 
     hero_ids = {id(c) for c in hero_cards}
     board_cards = [c for c in identified if id(c) not in hero_ids]
