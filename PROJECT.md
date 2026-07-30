@@ -1,6 +1,49 @@
 # Poker AI Assistant
 
-## Vad ar det har?
+---
+
+## AKTUELL INRIKTNING (2026-07-29): traningsverktyg
+
+Projektet har bytt riktning. Det som byggs och underhalls nu ar **traningsspelet**
+— se **[TRAINER.md](TRAINER.md)**.
+
+```bash
+python play.py
+```
+
+Du spelar hander mot botar och far omedelbar bedomning av varje beslut. Eftersom
+traningsspelet *ar* bordet behovs ingen skarmlasning: varje kort, stack och
+insats ar exakt kant, och feedbacken kommer direkt istallet for efter 660 ms
+bildanalys.
+
+### Varfor bytet
+
+Vision-pipelinen nedan gick inte att fa palitlig. Potten lastes som `$52142` i en
+hand och `$7247` i nasta, spelarnamn blev `6948`, och "sticky state" doljde felen
+snarare an loste dem. Grundproblemet ar arkitekturen: OCR mot en levande
+pokerklient ar alltid skort och alltid skraddarsytt per klient, tema och
+upplosning.
+
+Realtidsassistans vid ett bord man inte kontrollerar ar dessutom fusk och bryter
+mot pokersajternas villkor. Traningsvarianten ger battre feedback an
+skarmversionen nagonsin kunde, och ar helt legitim.
+
+### Vad som lever vidare
+
+| Modul | Anvands av traningen |
+|---|---|
+| `strategy/engine.py` | Ja — range-charts preflop |
+| `strategy/push_fold.py` | Ja — Nash push/fold |
+| `trainer/` | Ny — spelmotor, botar, coach, statistik |
+| `vision/`, `capture/`, `calibrate_*.py` | Nej — vilande, ej borttaget |
+| `llm/`, `ui/`, `main.py` | Nej — vilande |
+
+Den gamla koden ar kvar orord. Dokumentationen nedan beskriver den och galler
+fortfarande for de delarna.
+
+---
+
+## Vad ar det har? (ursprunglig beskrivning)
 En lokal AI-driven pokerassistent som laser pokerbordets tillstand i realtid, analyserar situationen, bygger motstandar-profiler, och ger optimala spelrad. Designad for att vara odetekterbar och kunna anvandas pa riktiga pokersajter.
 
 ## Varfor byggde vi det?

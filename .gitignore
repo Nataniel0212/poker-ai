@@ -17,6 +17,9 @@ models/card_templates_live_backup/
 # Database
 *.db
 
+# Traningssessioner (lokal statistik)
+trainer_sessions.json
+
 # IDE
 .vscode/
 .idea/
