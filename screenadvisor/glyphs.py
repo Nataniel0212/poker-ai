@@ -89,6 +89,11 @@ class Match:
 
     @property
     def trusted(self) -> bool:
+        # En nast intill exakt traff (>= 0.95) ar en inlard glyf och far inte
+        # vetoas av att ett annat marke rakar likna den — lutande spader och
+        # klover ligger nara varandra, men fel etikett nar aldrig sa hogt.
+        if self.score >= 0.95:
+            return True
         return self.score >= MIN_SCORE and self.margin >= MIN_MARGIN
 
 
