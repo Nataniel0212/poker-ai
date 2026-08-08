@@ -8,6 +8,15 @@ build/
 .venv/
 venv/
 
+# Secrets / environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+
 # Debug & generated images
 debug_images/
 models/card_templates_ps/
